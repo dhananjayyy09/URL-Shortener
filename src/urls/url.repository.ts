@@ -90,13 +90,16 @@ export class UrlRepository {
   }
 
   // Expiration is evaluated with the database clock so every instance agrees.
+  // An 'infinity' expires_at is reported as no expiration.
   async findRedirectTarget(code: string): Promise<RedirectTarget | null> {
     const { rows } = await this.db.query<RedirectTargetRow>(
       `SELECT original_url,
               is_active,
               (expires_at IS NOT NULL AND expires_at <= now()) AS is_expired,
-              expires_at,
-              extract(epoch FROM expires_at - now())::float8 AS expires_in_seconds
+              CASE WHEN isfinite(expires_at) THEN expires_at END AS expires_at,
+              CASE WHEN isfinite(expires_at)
+                   THEN extract(epoch FROM expires_at - now())::float8
+              END AS expires_in_seconds
          FROM urls
         WHERE code = $1`,
       [code],

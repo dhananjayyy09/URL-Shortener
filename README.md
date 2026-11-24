@@ -351,13 +351,15 @@ Each redirect runs one parameterized query that selects only the redirect fields
 SELECT original_url,
        is_active,
        (expires_at IS NOT NULL AND expires_at <= now()) AS is_expired,
-       expires_at,
-       extract(epoch FROM expires_at - now())::float8 AS expires_in_seconds
+       CASE WHEN isfinite(expires_at) THEN expires_at END AS expires_at,
+       CASE WHEN isfinite(expires_at)
+            THEN extract(epoch FROM expires_at - now())::float8
+       END AS expires_in_seconds
   FROM urls
  WHERE code = $1
 ```
 
-This query only runs on a cache miss (see [Redirect cache](#redirect-cache-phase-4)). `expires_in_seconds` is computed by PostgreSQL and is used to cap the cache TTL.
+This query only runs on a cache miss (see [Redirect cache](#redirect-cache-phase-4)). `expires_in_seconds` is computed by PostgreSQL and is used to cap the cache TTL. An `infinity` expiry is treated as no expiry.
 
 `EXPLAIN` shows an `Index Scan using urls_code_key`. The unique constraint already provides this index, so no new index was added. No latency or throughput numbers have been measured.
 

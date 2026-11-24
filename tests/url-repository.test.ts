@@ -145,6 +145,7 @@ describe("UrlRepository.findRedirectTarget", () => {
     expect(sql).toMatch(/WHERE code = \$1/);
     expect(sql).toContain("expires_at <= now()");
     expect(sql).toContain("expires_at - now()");
+    expect(sql).toMatch(/CASE WHEN isfinite\(expires_at\)/);
     expect(sql).not.toMatch(/JOIN|SELECT \*/i);
     expect(sql).not.toContain("abc123");
     expect(values).toEqual(["abc123"]);
