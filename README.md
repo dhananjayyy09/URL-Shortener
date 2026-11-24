@@ -33,9 +33,14 @@ The service does **not** yet cache, rate-limit traffic, record analytics, or cla
 - Short-code validation (Base62, 1-16 characters) before any database access
 - Active, inactive and expired URL handling, evaluated with the database clock
 
+## Phase 4 scope
+
+- Redis cache-aside for `GET /:code`; PostgreSQL stays the source of truth
+- Configurable cache TTL (`URL_CACHE_TTL_SECONDS`), capped by each URL's remaining lifetime
+- Graceful fallback to PostgreSQL on any Redis failure or malformed cache entry
+
 ### Deferred to later phases
 
-- Redis caching
 - Distributed rate limiting
 - Production observability beyond structured logs
 - Horizontal scaling and load testing
@@ -90,6 +95,7 @@ Required variables:
 - `DATABASE_URL`
 - `REDIS_URL`
 - `PUBLIC_BASE_URL`: absolute `http(s)` URL used to build `shortUrl` in API responses (for example `http://localhost:3000` or `https://sho.rt`). A path prefix is allowed; query strings and fragments are rejected; trailing slashes are removed.
+- `URL_CACHE_TTL_SECONDS`: redirect cache TTL in seconds (positive integer, default `300`). Invalid values fail startup validation.
 - `LOG_LEVEL`
 
 Compose also uses `POSTGRES_*` and `APP_DB_*` to create a non-superuser application role the first time the PostgreSQL volume is initialized.
@@ -342,10 +348,18 @@ Error bodies use the same `{ statusCode, error, message }` shape as the rest of 
 Each redirect runs one parameterized query that selects only the redirect fields:
 
 ```sql
-SELECT original_url, is_active, (expires_at IS NOT NULL AND expires_at <= now()) AS is_expired
+SELECT original_url,
+       is_active,
+       (expires_at IS NOT NULL AND expires_at <= now()) AS is_expired,
+       CASE WHEN isfinite(expires_at) THEN expires_at END AS expires_at,
+       CASE WHEN isfinite(expires_at)
+            THEN extract(epoch FROM expires_at - now())::float8
+       END AS expires_in_seconds
   FROM urls
  WHERE code = $1
 ```
+
+This query only runs on a cache miss (see [Redirect cache](#redirect-cache-phase-4)). `expires_in_seconds` is computed by PostgreSQL and is used to cap the cache TTL. An `infinity` expiry is treated as no expiry.
 
 `EXPLAIN` shows an `Index Scan using urls_code_key`. The unique constraint already provides this index, so no new index was added. No latency or throughput numbers have been measured.
 
@@ -379,9 +393,72 @@ curl -i http://127.0.0.1:3000/expd1      # 410
 
 Redirect behavior is covered by unit tests in `tests/redirect.test.ts` and `tests/url-repository.test.ts` with mocked dependencies. No live PostgreSQL is needed for `npm test`.
 
+## Redirect cache (Phase 4)
+
+Redirects use a cache-aside strategy in Redis (`src/urls/url.cache.ts`):
+
+1. Validate the short code. Malformed codes return 404 without touching Redis or PostgreSQL.
+2. `GET scaleurl:url:<code>` from Redis. A valid, active, unexpired entry redirects immediately with no database query.
+3. On a miss, or when the entry is malformed, inactive or past its `expiresAt`, query PostgreSQL.
+4. If PostgreSQL returns an active, unexpired URL, `SET scaleurl:url:<code> <json> EX <ttl>` and redirect.
+5. Unknown, inactive and expired URLs and database errors are never cached.
+
+**Key format:** `scaleurl:url:<code>`. It is built only by `urlCacheKey()`; the `scaleurl:url:` namespace keeps it apart from future Redis features such as rate limiting.
+
+**Value format:** JSON containing only what a redirect needs. No IDs, user IDs or timestamps other than the expiry are cached.
+
+```json
+{ "originalUrl": "https://example.com/path", "isActive": true, "expiresAt": null }
+```
+
+`expiresAt` is an ISO-8601 string or `null`. Each read is validated with Zod: the URL must be http(s), `isActive` must be a boolean, and `expiresAt` must be a date or `null`. Anything else is logged and treated as a miss, and the next PostgreSQL result overwrites it.
+
+**TTL and expiration:**
+
+- Every entry is written with `EX`; there are no permanent keys.
+- TTL = `min(URL_CACHE_TTL_SECONDS, floor(expires_in_seconds))`, where `expires_in_seconds` comes from PostgreSQL's clock. A URL that expires in 60 seconds is cached for at most 60 seconds even when the configured TTL is 300.
+- URLs with less than one second left, or already expired, are not cached.
+- On a cache hit, `expiresAt` is also checked against the API host clock. An entry past its expiry falls through to PostgreSQL, which makes the final decision.
+
+**Invalidation and consistency:** the API currently has no operation that updates, deactivates or deletes URLs, so no invalidation code exists yet. A future mutation must delete `scaleurl:url:<code>` after its database transaction commits. Until then, a row changed directly in PostgreSQL (for example `UPDATE urls SET is_active = false`) can still redirect from Redis until its cache entry expires, at most `URL_CACHE_TTL_SECONDS`. To force it, run `redis-cli DEL scaleurl:url:<code>`.
+
+**Redis failures:** Redis is an optimization for redirects, not a requirement:
+
+- GET errors, timeouts or a disconnected client are treated as a miss, and the request is served from PostgreSQL.
+- SET errors are swallowed after logging, and the redirect still succeeds.
+- Errors are logged at `warn` with credentials redacted. Logs are throttled to one line per 30 seconds per process, with a count of suppressed errors, so an outage does not flood the logs.
+- Clients never see Redis errors.
+- The Redis client fails commands immediately while disconnected (offline queue disabled; 2-second command timeout) and keeps reconnecting with capped backoff. Both the cache and `/health/ready` recover on their own when Redis returns. Readiness semantics are unchanged: `/health/ready` still reports 503 while Redis is down, even though redirects keep working.
+
+Run with `LOG_LEVEL=debug` to see a `redirect resolved` log line with `"source":"cache"` or `"source":"database"` for each redirect.
+
+### Test caching locally
+
+```bash
+LOG_LEVEL=debug npm run dev
+
+curl -s -X POST http://127.0.0.1:3000/api/v1/urls \
+  -H 'content-type: application/json' -d '{"url":"https://example.com"}'
+
+curl -i http://127.0.0.1:3000/<code>    # 1st: "source":"database" in the logs
+curl -i http://127.0.0.1:3000/<code>    # 2nd: "source":"cache"
+
+docker compose exec redis redis-cli GET scaleurl:url:<code>
+docker compose exec redis redis-cli TTL scaleurl:url:<code>   # <= URL_CACHE_TTL_SECONDS
+
+docker compose stop redis
+curl -i http://127.0.0.1:3000/<code>    # still 302, served from PostgreSQL
+curl -i http://127.0.0.1:3000/health/ready   # 503 (Redis is still a readiness dependency)
+docker compose start redis
+```
+
+Cache behavior is unit-tested with mocked Redis and PostgreSQL in `tests/url-cache.test.ts` and `tests/redirect-cache.test.ts`.
+
 ## Limitations
 
-- Redis caching of redirects, rate limiting, authentication, analytics, custom aliases, expiration cleanup, and load-test infrastructure are not implemented.
+- Rate limiting, authentication, analytics, custom aliases, expiration cleanup, and load-test infrastructure are not implemented.
 - Codes are sequential (`1`, `2`, ... `10`, ...), so they are short but enumerable. Do not treat short codes as secrets.
-- Creating a URL takes two database round trips (`nextval` and `INSERT`). Every redirect queries PostgreSQL; there is no cache yet.
-- No performance numbers have been measured. Do not treat the current phases as evidence of 5,000 RPS capacity.
+- Creating a URL takes two database round trips (`nextval` and `INSERT`). Redirects query PostgreSQL only on a cache miss.
+- Cache entries are not invalidated automatically yet (no URL mutation API exists). Rows changed directly in the database can be served stale from Redis for up to `URL_CACHE_TTL_SECONDS`.
+- There is no protection against a burst of concurrent misses for one code (no locking or request coalescing). Each miss queries PostgreSQL once.
+- No performance numbers (RPS, latency, hit rate) have been measured. Do not treat the current phases as evidence of 5,000 RPS capacity.

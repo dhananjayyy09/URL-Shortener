@@ -3,6 +3,7 @@ import { loadLocalEnv, parseEnv } from "./config/env.js";
 import { buildApp } from "./app.js";
 import { Database } from "./plugins/database.js";
 import { RedisConnection } from "./plugins/redis.js";
+import { UrlCache } from "./urls/url.cache.js";
 import { UrlRepository } from "./urls/url.repository.js";
 import { UrlService } from "./urls/url.service.js";
 import { redactErrorMessage } from "./utils/redact.js";
@@ -54,7 +55,11 @@ async function start(): Promise<void> {
     app = await buildApp({
       db,
       redis,
-      urlService: new UrlService(new UrlRepository(db), env.PUBLIC_BASE_URL),
+      urlService: new UrlService(
+        new UrlRepository(db),
+        env.PUBLIC_BASE_URL,
+        new UrlCache(redis, env.URL_CACHE_TTL_SECONDS),
+      ),
       logLevel: env.LOG_LEVEL,
     });
 

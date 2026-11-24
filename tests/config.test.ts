@@ -22,6 +22,7 @@ describe("environment configuration", () => {
       DATABASE_URL: validEnv.DATABASE_URL,
       REDIS_URL: validEnv.REDIS_URL,
       PUBLIC_BASE_URL: "http://localhost:3000",
+      URL_CACHE_TTL_SECONDS: 300,
       LOG_LEVEL: "info",
     });
   });
@@ -37,6 +38,21 @@ describe("environment configuration", () => {
     expect(env.HOST).toBe("0.0.0.0");
     expect(env.PORT).toBe(3000);
     expect(env.LOG_LEVEL).toBe("info");
+    expect(env.URL_CACHE_TTL_SECONDS).toBe(300);
+  });
+
+  it("accepts a custom URL cache TTL", () => {
+    expect(
+      parseEnv({ ...validEnv, URL_CACHE_TTL_SECONDS: "60" }).URL_CACHE_TTL_SECONDS,
+    ).toBe(60);
+  });
+
+  it("rejects URL cache TTLs that are not positive integers", () => {
+    for (const value of ["0", "-5", "1.5", "abc"]) {
+      expect(() =>
+        parseEnv({ ...validEnv, URL_CACHE_TTL_SECONDS: value }),
+      ).toThrow(/URL_CACHE_TTL_SECONDS must be a positive integer/);
+    }
   });
 
   it("rejects invalid ports", () => {

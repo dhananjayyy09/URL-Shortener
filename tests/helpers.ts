@@ -1,4 +1,10 @@
-import type { DatabasePort, RedisPort } from "../src/types/ports.js";
+import { vi } from "vitest";
+import type {
+  CacheStore,
+  DatabasePort,
+  RedisPort,
+} from "../src/types/ports.js";
+import type { UrlCache } from "../src/urls/url.cache.js";
 import type { CreatedUrl, UrlRepository } from "../src/urls/url.repository.js";
 import { UrlService } from "../src/urls/url.service.js";
 
@@ -40,6 +46,19 @@ export function createMockUrlRepository(
 
 export function createUrlService(
   repository: UrlRepositoryStub = createMockUrlRepository(),
+  cache?: UrlCache,
 ): UrlService {
-  return new UrlService(repository, TEST_PUBLIC_BASE_URL);
+  return new UrlService(repository, TEST_PUBLIC_BASE_URL, cache);
+}
+
+export function createMockCacheStore(initial: Record<string, string> = {}) {
+  const entries = new Map(Object.entries(initial));
+  const store = {
+    entries,
+    get: vi.fn(async (key: string) => entries.get(key) ?? null),
+    set: vi.fn(async (key: string, value: string, _ttlSeconds: number) => {
+      entries.set(key, value);
+    }),
+  } satisfies CacheStore & { entries: Map<string, string> };
+  return store;
 }
