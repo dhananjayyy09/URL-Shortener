@@ -45,19 +45,26 @@ export function normalizeClientId(ip: string | undefined): string {
     value = value.slice(0, zoneIndex);
   }
 
-  const mappedIpv4 = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(value);
-  if (mappedIpv4?.[1] && isIP(mappedIpv4[1]) === 4) {
-    return mappedIpv4[1];
-  }
-
   switch (isIP(value)) {
     case 4:
       return value;
     case 6:
-      return new URL(`http://[${value}]/`).hostname.slice(1, -1);
+      return unmapIpv4(new URL(`http://[${value}]/`).hostname.slice(1, -1));
     default:
       return UNKNOWN_CLIENT;
   }
+}
+
+// Canonical IPv6 writes IPv4-mapped addresses in hex (::ffff:cb00:7107).
+function unmapIpv4(canonicalIpv6: string): string {
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(canonicalIpv6);
+  if (!mapped?.[1] || !mapped[2]) {
+    return canonicalIpv6;
+  }
+
+  const high = Number.parseInt(mapped[1], 16);
+  const low = Number.parseInt(mapped[2], 16);
+  return [high >> 8, high & 0xff, low >> 8, low & 0xff].join(".");
 }
 
 export function rateLimitKey(
