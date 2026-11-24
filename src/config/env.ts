@@ -11,6 +11,25 @@ const logLevels = [
   "silent",
 ] as const;
 
+const databaseUrlSchema = z
+  .string({ error: "DATABASE_URL is required" })
+  .min(1, "DATABASE_URL is required")
+  .url("DATABASE_URL must be a valid URL");
+
+const publicBaseUrlSchema = z
+  .string({ error: "PUBLIC_BASE_URL is required" })
+  .min(1, "PUBLIC_BASE_URL is required")
+  .url("PUBLIC_BASE_URL must be a valid URL")
+  .refine((value) => {
+    const url = new URL(value);
+    return (
+      (url.protocol === "http:" || url.protocol === "https:") &&
+      url.search === "" &&
+      url.hash === ""
+    );
+  }, "PUBLIC_BASE_URL must be an http(s) URL without a query string or fragment")
+  .transform((value) => value.replace(/\/+$/, ""));
+
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   HOST: z.string().min(1).default("0.0.0.0"),
@@ -20,16 +39,16 @@ const envSchema = z.object({
     }
     return value;
   }, z.coerce.number().int().min(1).max(65535)),
-  DATABASE_URL: z
-    .string({ error: "DATABASE_URL is required" })
-    .min(1, "DATABASE_URL is required")
-    .url("DATABASE_URL must be a valid URL"),
+  DATABASE_URL: databaseUrlSchema,
   REDIS_URL: z
     .string({ error: "REDIS_URL is required" })
     .min(1, "REDIS_URL is required")
     .url("REDIS_URL must be a valid URL"),
+  PUBLIC_BASE_URL: publicBaseUrlSchema,
   LOG_LEVEL: z.enum(logLevels).default("info"),
 });
+
+const databaseEnvSchema = z.object({ DATABASE_URL: databaseUrlSchema });
 
 export type Env = z.infer<typeof envSchema>;
 
@@ -57,8 +76,11 @@ function redactSecrets(
   return redacted.replace(/:\/\/([^/\s]+)@/g, "://[redacted]@");
 }
 
-export function parseEnv(source: NodeJS.Dict<string>): Env {
-  const result = envSchema.safeParse(source);
+function parseWith<T extends z.ZodType>(
+  schema: T,
+  source: NodeJS.Dict<string>,
+): z.infer<T> {
+  const result = schema.safeParse(source);
 
   if (result.success) {
     return result.data;
@@ -74,4 +96,14 @@ export function parseEnv(source: NodeJS.Dict<string>): Env {
   throw new Error(
     redactSecrets(`Invalid environment configuration:\n${details}`, source),
   );
+}
+
+export function parseEnv(source: NodeJS.Dict<string>): Env {
+  return parseWith(envSchema, source);
+}
+
+export function parseDatabaseEnv(
+  source: NodeJS.Dict<string>,
+): z.infer<typeof databaseEnvSchema> {
+  return parseWith(databaseEnvSchema, source);
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseEnv } from "../src/config/env.js";
+import { parseDatabaseEnv, parseEnv } from "../src/config/env.js";
 
 const validEnv = {
   NODE_ENV: "test",
@@ -7,6 +7,7 @@ const validEnv = {
   PORT: "3000",
   DATABASE_URL: "postgresql://scaleurl:supersecret@127.0.0.1:5432/scaleurl",
   REDIS_URL: "redis://127.0.0.1:6379",
+  PUBLIC_BASE_URL: "http://localhost:3000",
   LOG_LEVEL: "info",
 };
 
@@ -20,6 +21,7 @@ describe("environment configuration", () => {
       PORT: 3000,
       DATABASE_URL: validEnv.DATABASE_URL,
       REDIS_URL: validEnv.REDIS_URL,
+      PUBLIC_BASE_URL: "http://localhost:3000",
       LOG_LEVEL: "info",
     });
   });
@@ -28,6 +30,7 @@ describe("environment configuration", () => {
     const env = parseEnv({
       DATABASE_URL: validEnv.DATABASE_URL,
       REDIS_URL: validEnv.REDIS_URL,
+      PUBLIC_BASE_URL: validEnv.PUBLIC_BASE_URL,
     });
 
     expect(env.NODE_ENV).toBe("development");
@@ -63,6 +66,29 @@ describe("environment configuration", () => {
 
     expect(() => parseEnv(withoutDatabase)).toThrow(/DATABASE_URL/);
     expect(() => parseEnv(withoutRedis)).toThrow(/REDIS_URL/);
+  });
+
+  it("requires a valid http(s) PUBLIC_BASE_URL and strips trailing slashes", () => {
+    const { PUBLIC_BASE_URL: _base, ...withoutBase } = validEnv;
+
+    expect(() => parseEnv(withoutBase)).toThrow(/PUBLIC_BASE_URL/);
+    expect(() =>
+      parseEnv({ ...validEnv, PUBLIC_BASE_URL: "ftp://short.example" }),
+    ).toThrow(/PUBLIC_BASE_URL/);
+    expect(() =>
+      parseEnv({ ...validEnv, PUBLIC_BASE_URL: "https://short.example/?a=1" }),
+    ).toThrow(/PUBLIC_BASE_URL/);
+    expect(
+      parseEnv({ ...validEnv, PUBLIC_BASE_URL: "https://short.example/s/" })
+        .PUBLIC_BASE_URL,
+    ).toBe("https://short.example/s");
+  });
+
+  it("parses only the database configuration for migrations", () => {
+    expect(parseDatabaseEnv({ DATABASE_URL: validEnv.DATABASE_URL })).toEqual({
+      DATABASE_URL: validEnv.DATABASE_URL,
+    });
+    expect(() => parseDatabaseEnv({})).toThrow(/DATABASE_URL/);
   });
 
   it("does not include secrets in validation error messages", () => {
