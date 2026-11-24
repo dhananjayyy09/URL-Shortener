@@ -116,3 +116,50 @@ describe("UrlRepository.create", () => {
     expect(query).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("UrlRepository.findRedirectTarget", () => {
+  it("runs a single parameterized lookup by code using the database clock", async () => {
+    const { db, query } = createDb(async () => ({
+      rows: [
+        {
+          original_url: "https://example.com/path?q=1",
+          is_active: true,
+          is_expired: false,
+        },
+      ],
+    }));
+
+    const result = await new UrlRepository(db).findRedirectTarget("abc123");
+
+    expect(result).toEqual({
+      originalUrl: "https://example.com/path?q=1",
+      isActive: true,
+      isExpired: false,
+    });
+    expect(query).toHaveBeenCalledTimes(1);
+    const [sql, values] = query.mock.calls[0] ?? [];
+    expect(sql).toMatch(/WHERE code = \$1/);
+    expect(sql).toContain("expires_at <= now()");
+    expect(sql).not.toMatch(/JOIN|SELECT \*/i);
+    expect(sql).not.toContain("abc123");
+    expect(values).toEqual(["abc123"]);
+  });
+
+  it("returns null when no row matches", async () => {
+    const { db } = createDb(async () => ({ rows: [] }));
+
+    await expect(
+      new UrlRepository(db).findRedirectTarget("missing"),
+    ).resolves.toBeNull();
+  });
+
+  it("propagates database errors", async () => {
+    const { db } = createDb(async () => {
+      throw new Error("connection terminated");
+    });
+
+    await expect(
+      new UrlRepository(db).findRedirectTarget("abc"),
+    ).rejects.toThrow("connection terminated");
+  });
+});

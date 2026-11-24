@@ -1,4 +1,5 @@
 import type { UrlRepository } from "./url.repository.js";
+import { isValidShortCode } from "./url.schema.js";
 
 export interface ShortUrl {
   code: string;
@@ -7,9 +8,19 @@ export interface ShortUrl {
   createdAt: string;
 }
 
+export type RedirectResolution =
+  | { status: "found"; originalUrl: string }
+  | { status: "invalid_code" }
+  | { status: "not_found" }
+  | { status: "inactive" }
+  | { status: "expired" };
+
 export class UrlService {
   constructor(
-    private readonly repository: Pick<UrlRepository, "create">,
+    private readonly repository: Pick<
+      UrlRepository,
+      "create" | "findRedirectTarget"
+    >,
     private readonly publicBaseUrl: string,
   ) {}
 
@@ -22,5 +33,27 @@ export class UrlService {
       shortUrl: `${this.publicBaseUrl}/${created.code}`,
       createdAt: created.createdAt.toISOString(),
     };
+  }
+
+  async resolveRedirect(code: string): Promise<RedirectResolution> {
+    if (!isValidShortCode(code)) {
+      return { status: "invalid_code" };
+    }
+
+    const target = await this.repository.findRedirectTarget(code);
+
+    if (!target) {
+      return { status: "not_found" };
+    }
+
+    if (!target.isActive) {
+      return { status: "inactive" };
+    }
+
+    if (target.isExpired) {
+      return { status: "expired" };
+    }
+
+    return { status: "found", originalUrl: target.originalUrl };
   }
 }

@@ -15,6 +15,18 @@ interface CreatedUrlRow extends Record<string, unknown> {
   created_at: Date;
 }
 
+export interface RedirectTarget {
+  originalUrl: string;
+  isActive: boolean;
+  isExpired: boolean;
+}
+
+interface RedirectTargetRow extends Record<string, unknown> {
+  original_url: string;
+  is_active: boolean;
+  is_expired: boolean;
+}
+
 const UNIQUE_VIOLATION = "23505";
 const MAX_CREATE_ATTEMPTS = 3;
 
@@ -71,5 +83,28 @@ export class UrlRepository {
         throw error;
       }
     }
+  }
+
+  // Expiration is evaluated with the database clock so every instance agrees.
+  async findRedirectTarget(code: string): Promise<RedirectTarget | null> {
+    const { rows } = await this.db.query<RedirectTargetRow>(
+      `SELECT original_url,
+              is_active,
+              (expires_at IS NOT NULL AND expires_at <= now()) AS is_expired
+         FROM urls
+        WHERE code = $1`,
+      [code],
+    );
+
+    const row = rows[0];
+    if (!row) {
+      return null;
+    }
+
+    return {
+      originalUrl: row.original_url,
+      isActive: row.is_active,
+      isExpired: row.is_expired,
+    };
   }
 }

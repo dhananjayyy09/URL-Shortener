@@ -1,6 +1,14 @@
 import { z } from "zod";
+import { isBase62 } from "../utils/base62.js";
 
 export const MAX_URL_LENGTH = 2048;
+
+// Matches the urls.code VARCHAR(16) column.
+export const MAX_CODE_LENGTH = 16;
+
+export function isValidShortCode(code: string): boolean {
+  return code.length > 0 && code.length <= MAX_CODE_LENGTH && isBase62(code);
+}
 
 const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
 
