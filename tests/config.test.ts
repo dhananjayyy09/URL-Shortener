@@ -78,6 +78,9 @@ describe("environment configuration", () => {
     expect(() =>
       parseEnv({ ...validEnv, PUBLIC_BASE_URL: "https://short.example/?a=1" }),
     ).toThrow(/PUBLIC_BASE_URL/);
+    expect(() =>
+      parseEnv({ ...validEnv, PUBLIC_BASE_URL: "https://user:secret@short.example" }),
+    ).toThrow(/PUBLIC_BASE_URL must not contain credentials/);
     expect(
       parseEnv({ ...validEnv, PUBLIC_BASE_URL: "https://short.example/s/" })
         .PUBLIC_BASE_URL,
