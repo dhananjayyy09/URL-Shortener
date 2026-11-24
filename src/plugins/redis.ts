@@ -1,5 +1,5 @@
 import { Redis } from "ioredis";
-import type { RedisPort } from "../types/ports.js";
+import type { CacheStore, RedisPort } from "../types/ports.js";
 
 const HEALTH_TIMEOUT_MS = 2_000;
 
@@ -22,7 +22,7 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   });
 }
 
-export class RedisConnection implements RedisPort {
+export class RedisConnection implements RedisPort, CacheStore {
   private closed = false;
 
   constructor(private readonly client: Redis) {}
@@ -34,12 +34,9 @@ export class RedisConnection implements RedisPort {
       commandTimeout: HEALTH_TIMEOUT_MS,
       maxRetriesPerRequest: 1,
       enableOfflineQueue: false,
+      // Keep reconnecting so readiness and the URL cache recover when Redis returns.
       retryStrategy(times: number) {
-        if (times > 8) {
-          return null;
-        }
-
-        return Math.min(times * 150, 1_000);
+        return Math.min(times * 150, 2_000);
       },
     });
 
@@ -72,6 +69,14 @@ export class RedisConnection implements RedisPort {
     } catch {
       return false;
     }
+  }
+
+  async get(key: string): Promise<string | null> {
+    return this.client.get(key);
+  }
+
+  async set(key: string, value: string, ttlSeconds: number): Promise<void> {
+    await this.client.set(key, value, "EX", ttlSeconds);
   }
 
   async close(): Promise<void> {

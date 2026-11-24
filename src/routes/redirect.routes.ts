@@ -12,10 +12,14 @@ export async function registerRedirectRoutes(
   urlService: UrlService,
 ): Promise<void> {
   app.get<{ Params: { code: string } }>("/:code", async (request, reply) => {
-    const result = await urlService.resolveRedirect(request.params.code);
+    const result = await urlService.resolveRedirect(
+      request.params.code,
+      request.log,
+    );
 
     switch (result.status) {
       case "found":
+        request.log.debug({ source: result.source }, "redirect resolved");
         return reply.redirect(toLocationHeader(result.originalUrl), 302);
       case "expired":
         return reply.status(410).send({

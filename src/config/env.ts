@@ -49,6 +49,13 @@ const envSchema = z.object({
     .min(1, "REDIS_URL is required")
     .url("REDIS_URL must be a valid URL"),
   PUBLIC_BASE_URL: publicBaseUrlSchema,
+  URL_CACHE_TTL_SECONDS: z.preprocess(
+    (value) => (value === undefined || value === "" ? 300 : value),
+    z.coerce
+      .number({ error: "URL_CACHE_TTL_SECONDS must be a positive integer" })
+      .int("URL_CACHE_TTL_SECONDS must be a positive integer")
+      .positive("URL_CACHE_TTL_SECONDS must be a positive integer"),
+  ),
   LOG_LEVEL: z.enum(logLevels).default("info"),
 });
 

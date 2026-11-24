@@ -125,6 +125,8 @@ describe("UrlRepository.findRedirectTarget", () => {
           original_url: "https://example.com/path?q=1",
           is_active: true,
           is_expired: false,
+          expires_at: new Date("2030-01-01T00:00:00.000Z"),
+          expires_in_seconds: 120.5,
         },
       ],
     }));
@@ -135,11 +137,14 @@ describe("UrlRepository.findRedirectTarget", () => {
       originalUrl: "https://example.com/path?q=1",
       isActive: true,
       isExpired: false,
+      expiresAt: new Date("2030-01-01T00:00:00.000Z"),
+      expiresInSeconds: 120.5,
     });
     expect(query).toHaveBeenCalledTimes(1);
     const [sql, values] = query.mock.calls[0] ?? [];
     expect(sql).toMatch(/WHERE code = \$1/);
     expect(sql).toContain("expires_at <= now()");
+    expect(sql).toContain("expires_at - now()");
     expect(sql).not.toMatch(/JOIN|SELECT \*/i);
     expect(sql).not.toContain("abc123");
     expect(values).toEqual(["abc123"]);

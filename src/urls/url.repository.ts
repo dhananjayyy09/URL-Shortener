@@ -19,12 +19,16 @@ export interface RedirectTarget {
   originalUrl: string;
   isActive: boolean;
   isExpired: boolean;
+  expiresAt: Date | null;
+  expiresInSeconds: number | null;
 }
 
 interface RedirectTargetRow extends Record<string, unknown> {
   original_url: string;
   is_active: boolean;
   is_expired: boolean;
+  expires_at: Date | null;
+  expires_in_seconds: number | null;
 }
 
 const UNIQUE_VIOLATION = "23505";
@@ -90,7 +94,9 @@ export class UrlRepository {
     const { rows } = await this.db.query<RedirectTargetRow>(
       `SELECT original_url,
               is_active,
-              (expires_at IS NOT NULL AND expires_at <= now()) AS is_expired
+              (expires_at IS NOT NULL AND expires_at <= now()) AS is_expired,
+              expires_at,
+              extract(epoch FROM expires_at - now())::float8 AS expires_in_seconds
          FROM urls
         WHERE code = $1`,
       [code],
@@ -105,6 +111,8 @@ export class UrlRepository {
       originalUrl: row.original_url,
       isActive: row.is_active,
       isExpired: row.is_expired,
+      expiresAt: row.expires_at,
+      expiresInSeconds: row.expires_in_seconds,
     };
   }
 }

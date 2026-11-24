@@ -14,6 +14,8 @@ function target(overrides: Partial<RedirectTarget> = {}): RedirectTarget {
     originalUrl: "https://example.com/some/long/path",
     isActive: true,
     isExpired: false,
+    expiresAt: null,
+    expiresInSeconds: null,
     ...overrides,
   };
 }
