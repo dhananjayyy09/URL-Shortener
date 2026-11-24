@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { createUrlBodySchema, MAX_URL_LENGTH } from "../src/urls/url.schema.js";
+import {
+  createUrlBodySchema,
+  isValidShortCode,
+  MAX_CODE_LENGTH,
+  MAX_URL_LENGTH,
+} from "../src/urls/url.schema.js";
 
 function firstIssue(body: unknown): string | undefined {
   const result = createUrlBodySchema.safeParse(body);
@@ -62,5 +67,22 @@ describe("URL creation body schema", () => {
     const atLimit = base + "a".repeat(MAX_URL_LENGTH - base.length);
     expect(createUrlBodySchema.safeParse({ url: atLimit }).success).toBe(true);
     expect(firstIssue({ url: `${atLimit}a` })).toMatch(/at most/);
+  });
+});
+
+describe("short code validation", () => {
+  it("accepts Base62 codes up to the column length", () => {
+    expect(MAX_CODE_LENGTH).toBe(16);
+    expect(isValidShortCode("1")).toBe(true);
+    expect(isValidShortCode("aZ09")).toBe(true);
+    expect(isValidShortCode("a".repeat(16))).toBe(true);
+  });
+
+  it("rejects empty, too long and non-Base62 codes", () => {
+    expect(isValidShortCode("")).toBe(false);
+    expect(isValidShortCode("a".repeat(17))).toBe(false);
+    for (const code of ["abc-1", "a b", "a/b", "ünï", "a.b", "a%20"]) {
+      expect(isValidShortCode(code)).toBe(false);
+    }
   });
 });

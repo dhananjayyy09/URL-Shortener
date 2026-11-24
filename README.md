@@ -4,8 +4,9 @@ ScaleURL is a production-oriented URL shortening service. The long-term goal is 
 
 - **Phase 1:** a type-safe Fastify foundation, configuration, Dockerized PostgreSQL and Redis, health checks, and graceful shutdown.
 - **Phase 2:** the URL creation pipeline: raw SQL migrations, the `urls` table, database-derived Base62 short codes, and `POST /api/v1/urls`.
+- **Phase 3:** the redirect engine: `GET /:code` looks the code up in PostgreSQL and redirects with `302 Found`.
 
-The service does **not** yet redirect short codes, cache, rate-limit traffic, or claim any requests-per-second capacity.
+The service does **not** yet cache, rate-limit traffic, record analytics, or claim any requests-per-second capacity.
 
 ## Phase 1 scope
 
@@ -26,9 +27,14 @@ The service does **not** yet redirect short codes, cache, rate-limit traffic, or
 - `POST /api/v1/urls` with Zod request validation
 - Configurable `PUBLIC_BASE_URL` for returned short links
 
+## Phase 3 scope
+
+- `GET /:code` redirect endpoint backed only by PostgreSQL
+- Short-code validation (Base62, 1-16 characters) before any database access
+- Active, inactive and expired URL handling, evaluated with the database clock
+
 ### Deferred to later phases
 
-- HTTP redirects (`GET /:code`)
 - Redis caching
 - Distributed rate limiting
 - Production observability beyond structured logs
@@ -176,7 +182,7 @@ npm test
 npm run test:watch
 ```
 
-Unit tests mock PostgreSQL and Redis. They do not require Docker. They cover environment validation, health routes, Base62 encoding, URL validation, the URL creation API, the URL repository (with a mocked query client), and the migration runner.
+Unit tests mock PostgreSQL and Redis. They do not require Docker. They cover environment validation, health routes, Base62 encoding, URL and short-code validation, the URL creation API, the redirect endpoint, the URL repository (with a mocked query client), and the migration runner.
 
 ## Create a short URL
 
@@ -293,9 +299,89 @@ docker compose down -v
 - The process exits before listening if `PORT` is out of range or a URL is malformed
 - Error messages are written without echoing credentials
 
+## Redirect a short URL
+
+`GET /:code`
+
+```bash
+curl -i http://127.0.0.1:3000/1
+```
+
+```text
+HTTP/1.1 302 Found
+location: https://example.com/some/long/path
+```
+
+The destination is always the `original_url` stored in PostgreSQL. Query strings on the short URL are ignored, and nothing in the request can change the destination. Non-ASCII characters in the stored URL are percent-encoded in the `Location` header.
+
+`302 Found` is used instead of `301 Moved Permanently` because browsers and proxies cache permanent redirects, which would prevent later phases from changing redirect behavior.
+
+### Status codes
+
+| Condition | Status | Body `message` |
+| --- | --- | --- |
+| Code exists, `is_active = true`, `expires_at` is `NULL` or in the future | `302 Found` | (empty, `Location` header set) |
+| Unknown code | `404 Not Found` | `Short URL not found` |
+| Malformed code (empty, non-Base62, longer than 16 characters) | `404 Not Found` | `Short URL not found` |
+| `is_active = false` (whether or not it has expired) | `404 Not Found` | `Short URL not found` |
+| Active but `expires_at <= now()` | `410 Gone` | `This short URL has expired` |
+| Path segment longer than Fastify's `maxParamLength` (100) | `414 URI Too Long` | (Fastify default) |
+| Database failure | `500 Internal Server Error` | `An unexpected error occurred` |
+
+Design decisions:
+
+- **Malformed codes return 404, not 400.** `GET /:code` catches every single-segment path, so returning 404 keeps unknown paths such as `/does-not-exist` behaving as they did before the route existed. Malformed codes are rejected before any database query.
+- **Inactive URLs return 404** so a disabled link is indistinguishable from one that never existed.
+- **Expired URLs return 410** so clients can tell that the link existed but is no longer valid. Expired rows are not deleted during a redirect.
+- **Expiration uses the database clock.** The lookup computes `expires_at IS NOT NULL AND expires_at <= now()` in SQL, so all API instances agree regardless of host clock drift.
+
+Error bodies use the same `{ statusCode, error, message }` shape as the rest of the API and never include SQL, connection details, or stack traces. Failures are logged through Fastify's logger.
+
+### Lookup query
+
+Each redirect runs one parameterized query that selects only the redirect fields:
+
+```sql
+SELECT original_url, is_active, (expires_at IS NOT NULL AND expires_at <= now()) AS is_expired
+  FROM urls
+ WHERE code = $1
+```
+
+`EXPLAIN` shows an `Index Scan using urls_code_key`. The unique constraint already provides this index, so no new index was added. No latency or throughput numbers have been measured.
+
+### Test redirects locally
+
+With PostgreSQL and Redis running and migrations applied:
+
+```bash
+npm run dev
+
+# create a URL and copy the returned code
+curl -s -X POST http://127.0.0.1:3000/api/v1/urls \
+  -H 'content-type: application/json' \
+  -d '{"url":"https://example.com/docs?x=1#top"}'
+
+curl -i http://127.0.0.1:3000/<code>     # 302 with location header
+curl -i http://127.0.0.1:3000/zzzzzz     # 404 unknown code
+curl -i http://127.0.0.1:3000/abc-123    # 404 malformed code
+```
+
+To try the inactive and expired paths, update a row directly:
+
+```bash
+docker compose exec postgres psql -U scaleurl -d scaleurl \
+  -c "UPDATE urls SET is_active = false WHERE code = '<code>'"   # now 404
+
+docker compose exec postgres psql -U scaleurl -d scaleurl \
+  -c "INSERT INTO urls (code, original_url, created_at, expires_at) VALUES ('expd1', 'https://example.com', now() - interval '2 days', now() - interval '1 day')"
+curl -i http://127.0.0.1:3000/expd1      # 410
+```
+
+Redirect behavior is covered by unit tests in `tests/redirect.test.ts` and `tests/url-repository.test.ts` with mocked dependencies. No live PostgreSQL is needed for `npm test`.
+
 ## Limitations
 
-- Redirects (`GET /:code`), caching, rate limiting, authentication, analytics, custom aliases, expiration cleanup, and load-test infrastructure are not implemented.
+- Redis caching of redirects, rate limiting, authentication, analytics, custom aliases, expiration cleanup, and load-test infrastructure are not implemented.
 - Codes are sequential (`1`, `2`, ... `10`, ...), so they are short but enumerable. Do not treat short codes as secrets.
-- Creating a URL takes two database round trips (`nextval` and `INSERT`).
+- Creating a URL takes two database round trips (`nextval` and `INSERT`). Every redirect queries PostgreSQL; there is no cache yet.
 - No performance numbers have been measured. Do not treat the current phases as evidence of 5,000 RPS capacity.

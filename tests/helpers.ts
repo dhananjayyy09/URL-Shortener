@@ -18,7 +18,10 @@ export function createMockRedis(healthy = true): RedisPort {
   };
 }
 
-export type UrlRepositoryStub = Pick<UrlRepository, "create">;
+export type UrlRepositoryStub = Pick<
+  UrlRepository,
+  "create" | "findRedirectTarget"
+>;
 
 export function createMockUrlRepository(
   overrides: Partial<UrlRepositoryStub> = {},
@@ -30,6 +33,7 @@ export function createMockUrlRepository(
       originalUrl,
       createdAt: new Date("2026-11-21T10:00:00.000Z"),
     }),
+    findRedirectTarget: async () => null,
     ...overrides,
   };
 }
