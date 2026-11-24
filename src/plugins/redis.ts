@@ -1,5 +1,10 @@
 import { Redis } from "ioredis";
-import type { CacheStore, RedisPort } from "../types/ports.js";
+import type {
+  CacheStore,
+  RateLimitStore,
+  RateLimitWindow,
+  RedisPort,
+} from "../types/ports.js";
 
 const HEALTH_TIMEOUT_MS = 2_000;
 
@@ -22,10 +27,35 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   });
 }
 
-export class RedisConnection implements RedisPort, CacheStore {
+// Fixed-window counter in one atomic step: increment, start the window on the
+// first hit (or repair a key that lost its TTL), and return count + remaining ms.
+export const RATE_LIMIT_SCRIPT = `
+local count = redis.call('INCR', KEYS[1])
+if count == 1 then
+  redis.call('PEXPIRE', KEYS[1], ARGV[1])
+end
+local ttl = redis.call('PTTL', KEYS[1])
+if ttl < 0 then
+  redis.call('PEXPIRE', KEYS[1], ARGV[1])
+  ttl = tonumber(ARGV[1])
+end
+return {count, ttl}
+`;
+
+interface RateLimitCommand {
+  scaleurlRateLimit(key: string, windowMs: number): Promise<unknown>;
+}
+
+export class RedisConnection implements RedisPort, CacheStore, RateLimitStore {
   private closed = false;
 
-  constructor(private readonly client: Redis) {}
+  constructor(private readonly client: Redis) {
+    // defineCommand runs the script with EVALSHA and falls back to EVAL on NOSCRIPT.
+    client.defineCommand("scaleurlRateLimit", {
+      numberOfKeys: 1,
+      lua: RATE_LIMIT_SCRIPT,
+    });
+  }
 
   static create(redisUrl: string): RedisConnection {
     const client = new Redis(redisUrl, {
@@ -77,6 +107,22 @@ export class RedisConnection implements RedisPort, CacheStore {
 
   async set(key: string, value: string, ttlSeconds: number): Promise<void> {
     await this.client.set(key, value, "EX", ttlSeconds);
+  }
+
+  async incrementWindow(key: string, windowMs: number): Promise<RateLimitWindow> {
+    const result = await (
+      this.client as unknown as RateLimitCommand
+    ).scaleurlRateLimit(key, windowMs);
+
+    if (
+      !Array.isArray(result) ||
+      typeof result[0] !== "number" ||
+      typeof result[1] !== "number"
+    ) {
+      throw new Error("Unexpected rate limit script result");
+    }
+
+    return { count: result[0], ttlMs: result[1] };
   }
 
   async close(): Promise<void> {

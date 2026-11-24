@@ -2,6 +2,7 @@ import { vi } from "vitest";
 import type {
   CacheStore,
   DatabasePort,
+  RateLimitStore,
   RedisPort,
 } from "../src/types/ports.js";
 import type { UrlCache } from "../src/urls/url.cache.js";
@@ -60,5 +61,24 @@ export function createMockCacheStore(initial: Record<string, string> = {}) {
       entries.set(key, value);
     }),
   } satisfies CacheStore & { entries: Map<string, string> };
+  return store;
+}
+
+// Emulates the Redis fixed-window script: the window starts on the first hit.
+export function createMockRateLimitStore(now: () => number = Date.now) {
+  const windows = new Map<string, { count: number; expiresAt: number }>();
+  const store = {
+    windows,
+    incrementWindow: vi.fn(async (key: string, windowMs: number) => {
+      const current = now();
+      let window = windows.get(key);
+      if (!window || window.expiresAt <= current) {
+        window = { count: 0, expiresAt: current + windowMs };
+        windows.set(key, window);
+      }
+      window.count += 1;
+      return { count: window.count, ttlMs: window.expiresAt - current };
+    }),
+  } satisfies RateLimitStore & { windows: Map<string, unknown> };
   return store;
 }

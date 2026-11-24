@@ -51,6 +51,11 @@ services:
       REDIS_URL: redis://redis:6379
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:3000}
       URL_CACHE_TTL_SECONDS: ${URL_CACHE_TTL_SECONDS:-300}
+      CREATE_URL_RATE_LIMIT_MAX: ${CREATE_URL_RATE_LIMIT_MAX:-20}
+      CREATE_URL_RATE_LIMIT_WINDOW_SECONDS: ${CREATE_URL_RATE_LIMIT_WINDOW_SECONDS:-60}
+      REDIRECT_RATE_LIMIT_MAX: ${REDIRECT_RATE_LIMIT_MAX:-120}
+      REDIRECT_RATE_LIMIT_WINDOW_SECONDS: ${REDIRECT_RATE_LIMIT_WINDOW_SECONDS:-60}
+      TRUST_PROXY: ${TRUST_PROXY:-false}
     command: ["sh", "-c", "node dist/scripts/migrate.js && exec node dist/server.js"]
     ports:
       - "${PORT:-3000}:${PORT:-3000}"

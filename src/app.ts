@@ -1,5 +1,10 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
+import {
+  createRateLimitHook,
+  type RateLimitPolicies,
+  type RateLimiter,
+} from "./ratelimit/rate-limit.js";
 import { registerHealthRoutes } from "./routes/health.routes.js";
 import { registerRedirectRoutes } from "./routes/redirect.routes.js";
 import { registerUrlRoutes } from "./routes/url.routes.js";
@@ -10,6 +15,8 @@ export interface BuildAppOptions {
   db: DatabasePort;
   redis: RedisPort;
   urlService: UrlService;
+  rateLimit?: { limiter: RateLimiter; policies: RateLimitPolicies };
+  trustProxy?: false | string[];
   logger?: boolean | object;
   logLevel?: string;
 }
@@ -44,6 +51,7 @@ export async function buildApp(
           censor: "[redacted]",
         },
       } as const),
+    trustProxy: options.trustProxy ?? false,
     requestIdHeader: "x-request-id",
     genReqId: (request) => {
       const header = request.headers["x-request-id"];
@@ -91,7 +99,16 @@ export async function buildApp(
   });
 
   await registerHealthRoutes(app);
-  await registerUrlRoutes(app, options.urlService);
-  await registerRedirectRoutes(app, options.urlService);
+  const rateLimit = options.rateLimit;
+  await registerUrlRoutes(
+    app,
+    options.urlService,
+    rateLimit && createRateLimitHook(rateLimit.limiter, rateLimit.policies.createUrl),
+  );
+  await registerRedirectRoutes(
+    app,
+    options.urlService,
+    rateLimit && createRateLimitHook(rateLimit.limiter, rateLimit.policies.redirect),
+  );
   return app;
 }

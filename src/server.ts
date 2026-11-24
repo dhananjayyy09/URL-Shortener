@@ -3,6 +3,7 @@ import { loadLocalEnv, parseEnv } from "./config/env.js";
 import { buildApp } from "./app.js";
 import { Database } from "./plugins/database.js";
 import { RedisConnection } from "./plugins/redis.js";
+import { RateLimiter } from "./ratelimit/rate-limit.js";
 import { UrlCache } from "./urls/url.cache.js";
 import { UrlRepository } from "./urls/url.repository.js";
 import { UrlService } from "./urls/url.service.js";
@@ -60,6 +61,22 @@ async function start(): Promise<void> {
         env.PUBLIC_BASE_URL,
         new UrlCache(redis, env.URL_CACHE_TTL_SECONDS),
       ),
+      rateLimit: {
+        limiter: new RateLimiter(redis),
+        policies: {
+          createUrl: {
+            name: "create-url",
+            max: env.CREATE_URL_RATE_LIMIT_MAX,
+            windowSeconds: env.CREATE_URL_RATE_LIMIT_WINDOW_SECONDS,
+          },
+          redirect: {
+            name: "redirect",
+            max: env.REDIRECT_RATE_LIMIT_MAX,
+            windowSeconds: env.REDIRECT_RATE_LIMIT_WINDOW_SECONDS,
+          },
+        },
+      },
+      trustProxy: env.TRUST_PROXY,
       logLevel: env.LOG_LEVEL,
     });
 

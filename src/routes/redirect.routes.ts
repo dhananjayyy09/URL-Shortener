@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, onRequestHookHandler } from "fastify";
 import type { UrlService } from "../urls/url.service.js";
 
 // WHATWG serialization yields an ASCII header value with an explicit "//"
@@ -10,33 +10,40 @@ function toLocationHeader(url: string): string {
 export async function registerRedirectRoutes(
   app: FastifyInstance,
   urlService: UrlService,
+  rateLimitHook?: onRequestHookHandler,
 ): Promise<void> {
-  app.get<{ Params: { code: string } }>("/:code", async (request, reply) => {
-    const result = await urlService.resolveRedirect(
-      request.params.code,
-      request.log,
-    );
+  const onRequest = rateLimitHook ? [rateLimitHook] : [];
 
-    switch (result.status) {
-      case "found":
-        request.log.debug({ source: result.source }, "redirect resolved");
-        return reply.redirect(toLocationHeader(result.originalUrl), 302);
-      case "expired":
-        return reply.status(410).send({
-          statusCode: 410,
-          error: "Gone",
-          message: "This short URL has expired",
-        });
-      // Malformed codes share the not-found response so this catch-all route keeps
-      // unknown single-segment paths returning 404, as before it existed.
-      case "invalid_code":
-      case "not_found":
-      case "inactive":
-        return reply.status(404).send({
-          statusCode: 404,
-          error: "Not Found",
-          message: "Short URL not found",
-        });
-    }
-  });
+  app.get<{ Params: { code: string } }>(
+    "/:code",
+    { onRequest },
+    async (request, reply) => {
+      const result = await urlService.resolveRedirect(
+        request.params.code,
+        request.log,
+      );
+
+      switch (result.status) {
+        case "found":
+          request.log.debug({ source: result.source }, "redirect resolved");
+          return reply.redirect(toLocationHeader(result.originalUrl), 302);
+        case "expired":
+          return reply.status(410).send({
+            statusCode: 410,
+            error: "Gone",
+            message: "This short URL has expired",
+          });
+        // Malformed codes share the not-found response so this catch-all route keeps
+        // unknown single-segment paths returning 404, as before it existed.
+        case "invalid_code":
+        case "not_found":
+        case "inactive":
+          return reply.status(404).send({
+            statusCode: 404,
+            error: "Not Found",
+            message: "Short URL not found",
+          });
+      }
+    },
+  );
 }

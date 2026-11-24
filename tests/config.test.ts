@@ -23,6 +23,11 @@ describe("environment configuration", () => {
       REDIS_URL: validEnv.REDIS_URL,
       PUBLIC_BASE_URL: "http://localhost:3000",
       URL_CACHE_TTL_SECONDS: 300,
+      CREATE_URL_RATE_LIMIT_MAX: 20,
+      CREATE_URL_RATE_LIMIT_WINDOW_SECONDS: 60,
+      REDIRECT_RATE_LIMIT_MAX: 120,
+      REDIRECT_RATE_LIMIT_WINDOW_SECONDS: 60,
+      TRUST_PROXY: false,
       LOG_LEVEL: "info",
     });
   });
@@ -52,6 +57,76 @@ describe("environment configuration", () => {
       expect(() =>
         parseEnv({ ...validEnv, URL_CACHE_TTL_SECONDS: value }),
       ).toThrow(/URL_CACHE_TTL_SECONDS must be a positive integer/);
+    }
+  });
+
+  it("accepts custom rate-limit policies", () => {
+    const env = parseEnv({
+      ...validEnv,
+      CREATE_URL_RATE_LIMIT_MAX: "5",
+      CREATE_URL_RATE_LIMIT_WINDOW_SECONDS: "10",
+      REDIRECT_RATE_LIMIT_MAX: "1000",
+      REDIRECT_RATE_LIMIT_WINDOW_SECONDS: "1",
+    });
+
+    expect(env.CREATE_URL_RATE_LIMIT_MAX).toBe(5);
+    expect(env.CREATE_URL_RATE_LIMIT_WINDOW_SECONDS).toBe(10);
+    expect(env.REDIRECT_RATE_LIMIT_MAX).toBe(1000);
+    expect(env.REDIRECT_RATE_LIMIT_WINDOW_SECONDS).toBe(1);
+  });
+
+  it("rejects rate-limit settings that are not positive integers", () => {
+    for (const name of [
+      "CREATE_URL_RATE_LIMIT_MAX",
+      "CREATE_URL_RATE_LIMIT_WINDOW_SECONDS",
+      "REDIRECT_RATE_LIMIT_MAX",
+      "REDIRECT_RATE_LIMIT_WINDOW_SECONDS",
+    ]) {
+      for (const value of ["0", "-1", "2.5", "abc"]) {
+        expect(() => parseEnv({ ...validEnv, [name]: value })).toThrow(
+          new RegExp(`${name} must be a positive integer`),
+        );
+      }
+    }
+  });
+
+  it("does not trust proxies by default", () => {
+    expect(parseEnv(validEnv).TRUST_PROXY).toBe(false);
+    expect(parseEnv({ ...validEnv, TRUST_PROXY: "" }).TRUST_PROXY).toBe(false);
+    expect(parseEnv({ ...validEnv, TRUST_PROXY: "false" }).TRUST_PROXY).toBe(false);
+  });
+
+  it("accepts explicit trusted proxy addresses and ranges", () => {
+    expect(
+      parseEnv({
+        ...validEnv,
+        TRUST_PROXY: "10.0.0.5, 172.16.0.0/12,2001:db8::/32,loopback,UniqueLocal",
+      }).TRUST_PROXY,
+    ).toEqual([
+      "10.0.0.5",
+      "172.16.0.0/12",
+      "2001:db8::/32",
+      "loopback",
+      "uniquelocal",
+    ]);
+  });
+
+  it("rejects unrestricted or malformed proxy trust", () => {
+    for (const value of [
+      "true",
+      "*",
+      "1",
+      "0.0.0.0/0",
+      "::/0",
+      "10.0.0.0/33",
+      "10.0.0.0/abc",
+      "example.com",
+      "10.0.0.5,,10.0.0.6",
+      "10.0.0.0/8/1",
+    ]) {
+      expect(() => parseEnv({ ...validEnv, TRUST_PROXY: value })).toThrow(
+        /TRUST_PROXY must be false or a comma-separated list/,
+      );
     }
   });
 
