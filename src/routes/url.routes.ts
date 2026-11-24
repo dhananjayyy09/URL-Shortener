@@ -1,12 +1,15 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, onRequestHookHandler } from "fastify";
 import { createUrlBodySchema } from "../urls/url.schema.js";
 import type { UrlService } from "../urls/url.service.js";
 
 export async function registerUrlRoutes(
   app: FastifyInstance,
   urlService: UrlService,
+  rateLimitHook?: onRequestHookHandler,
 ): Promise<void> {
-  app.post("/api/v1/urls", async (request, reply) => {
+  const onRequest = rateLimitHook ? [rateLimitHook] : [];
+
+  app.post("/api/v1/urls", { onRequest }, async (request, reply) => {
     const parsed = createUrlBodySchema.safeParse(request.body ?? {});
 
     if (!parsed.success) {

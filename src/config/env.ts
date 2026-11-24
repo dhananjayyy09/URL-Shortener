@@ -1,4 +1,5 @@
 import { config as loadDotenv } from "dotenv";
+import { isIP } from "node:net";
 import { z } from "zod";
 
 const logLevels = [
@@ -34,6 +35,60 @@ const publicBaseUrlSchema = z
   }, "PUBLIC_BASE_URL must not contain credentials")
   .transform((value) => value.replace(/\/+$/, ""));
 
+function positiveInt(name: string, defaultValue: number) {
+  const message = `${name} must be a positive integer`;
+  return z.preprocess(
+    (value) => (value === undefined || value === "" ? defaultValue : value),
+    z.coerce.number({ error: message }).int(message).positive(message),
+  );
+}
+
+const PROXY_KEYWORDS = new Set(["loopback", "linklocal", "uniquelocal"]);
+
+function isTrustedProxyEntry(entry: string): boolean {
+  if (PROXY_KEYWORDS.has(entry)) {
+    return true;
+  }
+
+  const [address, prefix, ...rest] = entry.split("/");
+  const version = address ? isIP(address) : 0;
+  if (version === 0 || rest.length > 0) {
+    return false;
+  }
+  if (prefix === undefined) {
+    return true;
+  }
+  if (!/^\d{1,3}$/.test(prefix)) {
+    return false;
+  }
+
+  const bits = Number(prefix);
+  return bits >= 1 && bits <= (version === 4 ? 32 : 128);
+}
+
+// Only explicit proxy addresses are trusted; "true", hop counts and /0 ranges
+// would let any client choose its own rate-limit identity via X-Forwarded-For.
+const trustProxySchema = z
+  .string()
+  .optional()
+  .transform((value, ctx): false | string[] => {
+    const trimmed = value?.trim() ?? "";
+    if (trimmed === "" || trimmed.toLowerCase() === "false") {
+      return false;
+    }
+
+    const entries = trimmed.split(",").map((entry) => entry.trim().toLowerCase());
+    if (entries.some((entry) => !isTrustedProxyEntry(entry))) {
+      ctx.addIssue({
+        code: "custom",
+        message:
+          "TRUST_PROXY must be false or a comma-separated list of proxy IPs, CIDR ranges (prefix 1 or more), loopback, linklocal or uniquelocal",
+      });
+      return z.NEVER;
+    }
+    return entries;
+  });
+
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   HOST: z.string().min(1).default("0.0.0.0"),
@@ -49,13 +104,18 @@ const envSchema = z.object({
     .min(1, "REDIS_URL is required")
     .url("REDIS_URL must be a valid URL"),
   PUBLIC_BASE_URL: publicBaseUrlSchema,
-  URL_CACHE_TTL_SECONDS: z.preprocess(
-    (value) => (value === undefined || value === "" ? 300 : value),
-    z.coerce
-      .number({ error: "URL_CACHE_TTL_SECONDS must be a positive integer" })
-      .int("URL_CACHE_TTL_SECONDS must be a positive integer")
-      .positive("URL_CACHE_TTL_SECONDS must be a positive integer"),
+  URL_CACHE_TTL_SECONDS: positiveInt("URL_CACHE_TTL_SECONDS", 300),
+  CREATE_URL_RATE_LIMIT_MAX: positiveInt("CREATE_URL_RATE_LIMIT_MAX", 20),
+  CREATE_URL_RATE_LIMIT_WINDOW_SECONDS: positiveInt(
+    "CREATE_URL_RATE_LIMIT_WINDOW_SECONDS",
+    60,
   ),
+  REDIRECT_RATE_LIMIT_MAX: positiveInt("REDIRECT_RATE_LIMIT_MAX", 120),
+  REDIRECT_RATE_LIMIT_WINDOW_SECONDS: positiveInt(
+    "REDIRECT_RATE_LIMIT_WINDOW_SECONDS",
+    60,
+  ),
+  TRUST_PROXY: trustProxySchema,
   LOG_LEVEL: z.enum(logLevels).default("info"),
 });
 

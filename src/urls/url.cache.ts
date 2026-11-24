@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { CacheStore } from "../types/ports.js";
 import { redactErrorMessage } from "../utils/redact.js";
+import { ThrottledWarning, type WarnLogger } from "../utils/throttled-warning.js";
 import { MAX_URL_LENGTH } from "./url.schema.js";
 
 export const URL_CACHE_KEY_PREFIX = "scaleurl:url:";
@@ -15,9 +16,7 @@ export interface CachedRedirect {
   expiresAt: string | null;
 }
 
-export interface CacheLogger {
-  warn(obj: object, msg: string): void;
-}
+export type CacheLogger = WarnLogger;
 
 const ERROR_LOG_INTERVAL_MS = 30_000;
 
@@ -53,14 +52,19 @@ function parseEntry(raw: string): CachedRedirect | null {
 
 // Redis is an optimization: every failure is logged (throttled) and reported as a miss.
 export class UrlCache {
-  private lastErrorLoggedAt = Number.NEGATIVE_INFINITY;
-  private suppressedErrors = 0;
+  private readonly errorLog: ThrottledWarning;
 
   constructor(
     private readonly store: CacheStore,
     private readonly ttlSeconds: number,
     private readonly now: () => number = Date.now,
-  ) {}
+  ) {
+    this.errorLog = new ThrottledWarning(
+      "URL cache unavailable; falling back to PostgreSQL",
+      ERROR_LOG_INTERVAL_MS,
+      now,
+    );
+  }
 
   async get(code: string, log: CacheLogger): Promise<CachedRedirect | null> {
     const key = urlCacheKey(code);
@@ -118,21 +122,6 @@ export class UrlCache {
   }
 
   private logError(log: CacheLogger, operation: string, error: unknown): void {
-    const now = this.now();
-    if (now - this.lastErrorLoggedAt < ERROR_LOG_INTERVAL_MS) {
-      this.suppressedErrors += 1;
-      return;
-    }
-
-    log.warn(
-      {
-        operation,
-        error: redactErrorMessage(error),
-        suppressedSinceLastLog: this.suppressedErrors,
-      },
-      "URL cache unavailable; falling back to PostgreSQL",
-    );
-    this.lastErrorLoggedAt = now;
-    this.suppressedErrors = 0;
+    this.errorLog.log(log, { operation, error: redactErrorMessage(error) });
   }
 }

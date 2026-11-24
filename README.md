@@ -5,8 +5,10 @@ ScaleURL is a production-oriented URL shortening service. The long-term goal is 
 - **Phase 1:** a type-safe Fastify foundation, configuration, Dockerized PostgreSQL and Redis, health checks, and graceful shutdown.
 - **Phase 2:** the URL creation pipeline: raw SQL migrations, the `urls` table, database-derived Base62 short codes, and `POST /api/v1/urls`.
 - **Phase 3:** the redirect engine: `GET /:code` looks the code up in PostgreSQL and redirects with `302 Found`.
+- **Phase 4:** Redis cache-aside for redirects, with PostgreSQL as the source of truth.
+- **Phase 5:** Redis-backed, per-client-IP fixed-window rate limiting for URL creation and redirects.
 
-The service does **not** yet cache, rate-limit traffic, record analytics, or claim any requests-per-second capacity.
+The service does **not** yet record analytics, authenticate clients, or claim any requests-per-second capacity.
 
 ## Phase 1 scope
 
@@ -38,6 +40,14 @@ The service does **not** yet cache, rate-limit traffic, record analytics, or cla
 - Redis cache-aside for `GET /:code`; PostgreSQL stays the source of truth
 - Configurable cache TTL (`URL_CACHE_TTL_SECONDS`), capped by each URL's remaining lifetime
 - Graceful fallback to PostgreSQL on any Redis failure or malformed cache entry
+
+## Phase 5 scope
+
+- Atomic Redis fixed-window rate limiting (one Lua script call per request)
+- Separate configurable policies for `POST /api/v1/urls` and `GET /:code`; health endpoints are exempt
+- `429 Too Many Requests` with `RateLimit-*` and `Retry-After` headers
+- Explicit, validated reverse-proxy trust (`TRUST_PROXY`, off by default)
+- Fail-open when Redis is unavailable
 
 ### Deferred to later phases
 
@@ -96,6 +106,8 @@ Required variables:
 - `REDIS_URL`
 - `PUBLIC_BASE_URL`: absolute `http(s)` URL used to build `shortUrl` in API responses (for example `http://localhost:3000` or `https://sho.rt`). A path prefix is allowed; query strings and fragments are rejected; trailing slashes are removed.
 - `URL_CACHE_TTL_SECONDS`: redirect cache TTL in seconds (positive integer, default `300`). Invalid values fail startup validation.
+- `CREATE_URL_RATE_LIMIT_MAX`, `CREATE_URL_RATE_LIMIT_WINDOW_SECONDS`, `REDIRECT_RATE_LIMIT_MAX`, `REDIRECT_RATE_LIMIT_WINDOW_SECONDS`: rate-limit policies (positive integers). See [Rate limiting](#rate-limiting-phase-5).
+- `TRUST_PROXY`: reverse proxies whose `X-Forwarded-For` is trusted (default `false`). See [Client identity and proxies](#client-identity-and-proxies).
 - `LOG_LEVEL`
 
 Compose also uses `POSTGRES_*` and `APP_DB_*` to create a non-superuser application role the first time the PostgreSQL volume is initialized.
@@ -188,7 +200,16 @@ npm test
 npm run test:watch
 ```
 
-Unit tests mock PostgreSQL and Redis. They do not require Docker. They cover environment validation, health routes, Base62 encoding, URL and short-code validation, the URL creation API, the redirect endpoint, the URL repository (with a mocked query client), and the migration runner.
+Unit tests mock PostgreSQL and Redis. They do not require Docker. They cover environment validation, health routes, Base62 encoding, URL and short-code validation, the URL creation API, the redirect endpoint, the URL repository (with a mocked query client), the migration runner, the redirect cache, and rate limiting.
+
+`tests/rate-limit.redis.test.ts` runs the rate-limit Lua script against a real Redis, including 200 concurrent increments over 5 connections. It is skipped unless `REDIS_TEST_URL` is set:
+
+```bash
+docker compose up -d redis
+REDIS_TEST_URL=redis://127.0.0.1:6379 npm test
+```
+
+It only touches keys under `scaleurl:test:ratelimit:<random-uuid>:` and deletes them afterwards.
 
 ## Create a short URL
 
@@ -454,11 +475,115 @@ docker compose start redis
 
 Cache behavior is unit-tested with mocked Redis and PostgreSQL in `tests/url-cache.test.ts` and `tests/redirect-cache.test.ts`.
 
+## Rate limiting (Phase 5)
+
+### Algorithm
+
+Each request to a limited route runs one atomic Redis Lua script (`RATE_LIMIT_SCRIPT` in `src/plugins/redis.ts`, sent with `EVALSHA`):
+
+```lua
+local count = redis.call('INCR', KEYS[1])
+if count == 1 then redis.call('PEXPIRE', KEYS[1], ARGV[1]) end  -- window starts on first hit
+local ttl = redis.call('PTTL', KEYS[1])
+if ttl < 0 then redis.call('PEXPIRE', KEYS[1], ARGV[1]); ttl = tonumber(ARGV[1]) end  -- repair a key with no TTL
+return {count, ttl}
+```
+
+The request is allowed when `count <= max`. Because Redis runs the script atomically, concurrent requests on any number of API instances each get a distinct count, so they cannot get past the limit together. There is one Redis round trip per request and no database access. The hook runs in `onRequest`, before body parsing and the route handler.
+
+This is a **fixed window anchored at each client's first request**, not a sliding window. A client can send up to `2 × max` requests in a short burst that spans the end of one window and the start of the next. Rejected requests still increment the counter, but they do not extend the window.
+
+### Policies
+
+| Route | Policy name | Default | Variables |
+| --- | --- | --- | --- |
+| `POST /api/v1/urls` | `create-url` | 20 requests / 60 s per client IP | `CREATE_URL_RATE_LIMIT_MAX`, `CREATE_URL_RATE_LIMIT_WINDOW_SECONDS` |
+| `GET /:code` | `redirect` | 120 requests / 60 s per client IP | `REDIRECT_RATE_LIMIT_MAX`, `REDIRECT_RATE_LIMIT_WINDOW_SECONDS` |
+| `/health/live`, `/health/ready` | none | not limited | none |
+
+URL creation is stricter because each request writes to PostgreSQL. These are development defaults, not tuned production values. Adjust them for real traffic, especially for many users behind one NAT, which share one IP. All four values must be positive integers; anything else fails startup validation. `GET /:code` matches every single-segment path, so unknown and malformed codes count against the redirect policy too.
+
+### Redis key format
+
+```
+scaleurl:ratelimit:<policy>:<client-id>
+e.g. scaleurl:ratelimit:create-url:203.0.113.7
+     scaleurl:ratelimit:redirect:2001:db8::1
+```
+
+- Keys are built only by `rateLimitKey()`. The `scaleurl:ratelimit:` prefix keeps them separate from `scaleurl:url:` cache keys.
+- The value is just the integer counter. Its TTL is the time left in the window.
+- `<client-id>` is the normalized client IP. IPv4-mapped IPv6 (`::ffff:203.0.113.7`) becomes plain IPv4, IPv6 is lowercased and compressed, and zone IDs are dropped.
+- A value that is not a valid IP maps to `unknown`. This means user-controlled text never reaches the key, so no hashing is needed.
+
+### Client identity and proxies
+
+The client identity is Fastify's `request.ip`. By default (`TRUST_PROXY=false`), this is the TCP peer address and `X-Forwarded-For` is ignored, so clients cannot pick their own identity.
+
+When the API runs behind a reverse proxy or load balancer, every request appears to come from the proxy's IP. In that case, set `TRUST_PROXY` to the proxy's addresses:
+
+```dotenv
+TRUST_PROXY=10.0.0.5                 # a single proxy
+TRUST_PROXY=10.0.0.0/8,172.16.0.0/12 # proxy subnets
+TRUST_PROXY=loopback                 # proxy on the same host (127.0.0.1/8, ::1)
+```
+
+- Fastify then reads `X-Forwarded-For` from right to left, skipping trusted hops. The first untrusted address becomes the client IP, so a client cannot spoof extra hops in front of the proxy.
+- Accepted values are `false`, or a comma-separated list of IPs, CIDR ranges with a prefix of 1 or more, `loopback`, `linklocal` or `uniquelocal`.
+- `true`, `*`, hop counts and `/0` ranges are rejected, because they would trust headers from any client.
+- Only list addresses that really are your proxies. The proxy must overwrite or append `X-Forwarded-For`, not pass a client-supplied value through unchanged.
+
+### Response headers
+
+Every limited response, allowed or rejected, includes:
+
+| Header | Meaning |
+| --- | --- |
+| `RateLimit-Limit` | `max` for this route's policy |
+| `RateLimit-Remaining` | requests left in the current window (never negative) |
+| `RateLimit-Reset` | seconds until the window resets (rounded up, at least 1) |
+| `Retry-After` | only on 429; same value as `RateLimit-Reset` |
+
+Rejected requests get `429 Too Many Requests` with the standard error body. The route handler does not run, so a rejected `POST` never touches PostgreSQL.
+
+```json
+{ "statusCode": 429, "error": "Too Many Requests", "message": "Rate limit exceeded. Try again in 42 seconds." }
+```
+
+### Redis outages: fail-open
+
+If the script fails (Redis down, timeout or unexpected reply), the request is **allowed** without `RateLimit-*` headers. Clients never see Redis errors.
+
+- A warning (`rate limiter unavailable; allowing request`) is logged with credentials redacted. Logs are throttled to one line per 30 seconds with a suppressed-error count.
+- This trade-off favors availability over protection: **rate limiting is bypassed while Redis is unavailable**.
+- `/health/ready` reports 503 during the outage, so a load balancer can still react.
+- The redirect cache keeps its Phase 4 fallback behavior.
+
+### Test rate limiting locally
+
+```bash
+CREATE_URL_RATE_LIMIT_MAX=3 npm run dev
+
+for i in 1 2 3 4; do
+  curl -s -o /dev/null -D - -X POST http://127.0.0.1:3000/api/v1/urls \
+    -H 'content-type: application/json' -d '{"url":"https://example.com"}' \
+    | grep -iE '^HTTP|^ratelimit|^retry-after'
+done                                   # 4th request: HTTP/1.1 429 + Retry-After
+
+docker compose exec redis redis-cli --scan --pattern 'scaleurl:ratelimit:*'
+docker compose exec redis redis-cli TTL scaleurl:ratelimit:create-url:127.0.0.1
+docker compose exec redis redis-cli DEL scaleurl:ratelimit:create-url:127.0.0.1   # reset
+
+docker compose stop redis              # requests now succeed without RateLimit-* headers
+docker compose start redis
+```
+
 ## Limitations
 
-- Rate limiting, authentication, analytics, custom aliases, expiration cleanup, and load-test infrastructure are not implemented.
+- Authentication, API keys, analytics, custom aliases, expiration cleanup, and load-test infrastructure are not implemented.
 - Codes are sequential (`1`, `2`, ... `10`, ...), so they are short but enumerable. Do not treat short codes as secrets.
 - Creating a URL takes two database round trips (`nextval` and `INSERT`). Redirects query PostgreSQL only on a cache miss.
 - Cache entries are not invalidated automatically yet (no URL mutation API exists). Rows changed directly in the database can be served stale from Redis for up to `URL_CACHE_TTL_SECONDS`.
 - There is no protection against a burst of concurrent misses for one code (no locking or request coalescing). Each miss queries PostgreSQL once.
+- Rate limiting is a per-IP fixed window. It allows bursts of up to twice the limit across a window boundary, it treats clients behind one NAT as a single client, and limiting per IPv6 address is weak because one user often controls a whole /64. It is bypassed while Redis is down.
 - No performance numbers (RPS, latency, hit rate) have been measured. Do not treat the current phases as evidence of 5,000 RPS capacity.
