@@ -1,3 +1,5 @@
+import { randomInt } from "node:crypto";
+
 export const BASE62_ALPHABET =
   "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
@@ -39,6 +41,20 @@ export function encodeBase62(value: bigint): string {
   }
 
   return encoded;
+}
+
+export const SHORT_CODE_LENGTH = 7;
+
+// 62^7 ≈ 3.5 trillion codes drawn from a CSPRNG, so codes are not enumerable.
+export function generateShortCode(
+  length: number = SHORT_CODE_LENGTH,
+  nextIndex: (max: number) => number = randomInt,
+): string {
+  let code = "";
+  for (let i = 0; i < length; i += 1) {
+    code += BASE62_ALPHABET.charAt(nextIndex(BASE62_ALPHABET.length));
+  }
+  return code;
 }
 
 export function decodeBase62(value: string): bigint {

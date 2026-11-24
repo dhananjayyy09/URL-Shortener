@@ -1,5 +1,6 @@
 export interface DatabasePort {
   ping(): Promise<boolean>
+  migrationsApplied(): Promise<boolean>
   close(): Promise<void>
 }
 

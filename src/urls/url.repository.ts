@@ -1,5 +1,5 @@
 import type { Queryable } from "../types/ports.js";
-import { encodeBase62 } from "../utils/base62.js";
+import { generateShortCode } from "../utils/base62.js";
 
 export interface CreatedUrl {
   id: string;
@@ -32,7 +32,7 @@ interface RedirectTargetRow extends Record<string, unknown> {
 }
 
 const UNIQUE_VIOLATION = "23505";
-const MAX_CREATE_ATTEMPTS = 3;
+const MAX_CREATE_ATTEMPTS = 5;
 
 function isUniqueCodeViolation(error: unknown): boolean {
   return (
@@ -46,27 +46,20 @@ function isUniqueCodeViolation(error: unknown): boolean {
 }
 
 export class UrlRepository {
-  constructor(private readonly db: Queryable) {}
+  constructor(
+    private readonly db: Queryable,
+    private readonly generateCode: () => string = generateShortCode,
+  ) {}
 
-  // Reserves the identity value first so the row is inserted with its final
-  // code in a single statement; no partially created row is ever visible.
+  // One INSERT per attempt; a random-code collision is retried with a new code.
   async create(originalUrl: string): Promise<CreatedUrl> {
     for (let attempt = 1; ; attempt += 1) {
-      const { rows } = await this.db.query<{ id: string }>(
-        "SELECT nextval(pg_get_serial_sequence('urls', 'id'))::text AS id",
-      );
-      const id = rows[0]?.id;
-      if (id === undefined) {
-        throw new Error("Failed to reserve a URL id");
-      }
-
       try {
         const result = await this.db.query<CreatedUrlRow>(
-          `INSERT INTO urls (id, code, original_url)
-           OVERRIDING SYSTEM VALUE
-           VALUES ($1, $2, $3)
+          `INSERT INTO urls (code, original_url)
+           VALUES ($1, $2)
            RETURNING id::text AS id, code, original_url, created_at`,
-          [id, encodeBase62(BigInt(id)), originalUrl],
+          [this.generateCode(), originalUrl],
         );
 
         const row = result.rows[0];
