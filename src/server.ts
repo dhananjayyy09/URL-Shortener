@@ -3,18 +3,13 @@ import { loadLocalEnv, parseEnv } from "./config/env.js";
 import { buildApp } from "./app.js";
 import { Database } from "./plugins/database.js";
 import { RedisConnection } from "./plugins/redis.js";
+import { UrlRepository } from "./urls/url.repository.js";
+import { UrlService } from "./urls/url.service.js";
+import { redactErrorMessage } from "./utils/redact.js";
 
 loadLocalEnv();
 
 const env = parseEnv(process.env);
-
-function redactErrorMessage(error: unknown): string {
-  if (!(error instanceof Error)) {
-    return "Unknown error";
-  }
-
-  return error.message.replace(/:\/\/([^/\s]+)@/g, "://[redacted]@");
-}
 
 async function closeQuietly(
   resource: { close(): Promise<void> } | undefined,
@@ -59,6 +54,7 @@ async function start(): Promise<void> {
     app = await buildApp({
       db,
       redis,
+      urlService: new UrlService(new UrlRepository(db), env.PUBLIC_BASE_URL),
       logLevel: env.LOG_LEVEL,
     });
 

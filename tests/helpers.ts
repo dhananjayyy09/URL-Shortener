@@ -1,4 +1,8 @@
 import type { DatabasePort, RedisPort } from "../src/types/ports.js";
+import type { CreatedUrl, UrlRepository } from "../src/urls/url.repository.js";
+import { UrlService } from "../src/urls/url.service.js";
+
+export const TEST_PUBLIC_BASE_URL = "http://localhost:3000";
 
 export function createMockDatabase(healthy = true): DatabasePort {
   return {
@@ -12,4 +16,26 @@ export function createMockRedis(healthy = true): RedisPort {
     ping: async () => healthy,
     close: async () => undefined,
   };
+}
+
+export type UrlRepositoryStub = Pick<UrlRepository, "create">;
+
+export function createMockUrlRepository(
+  overrides: Partial<UrlRepositoryStub> = {},
+): UrlRepositoryStub {
+  return {
+    create: async (originalUrl: string): Promise<CreatedUrl> => ({
+      id: "125",
+      code: "21",
+      originalUrl,
+      createdAt: new Date("2026-11-21T10:00:00.000Z"),
+    }),
+    ...overrides,
+  };
+}
+
+export function createUrlService(
+  repository: UrlRepositoryStub = createMockUrlRepository(),
+): UrlService {
+  return new UrlService(repository, TEST_PUBLIC_BASE_URL);
 }

@@ -1,11 +1,14 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
 import { registerHealthRoutes } from "./routes/health.routes.js";
+import { registerUrlRoutes } from "./routes/url.routes.js";
 import type { DatabasePort, RedisPort } from "./types/ports.js";
+import type { UrlService } from "./urls/url.service.js";
 
 export interface BuildAppOptions {
   db: DatabasePort;
   redis: RedisPort;
+  urlService: UrlService;
   logger?: boolean | object;
   logLevel?: string;
 }
@@ -87,5 +90,6 @@ export async function buildApp(
   });
 
   await registerHealthRoutes(app);
+  await registerUrlRoutes(app, options.urlService);
   return app;
 }

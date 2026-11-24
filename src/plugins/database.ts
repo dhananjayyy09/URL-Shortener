@@ -1,5 +1,5 @@
 import pg from "pg";
-import type { DatabasePort } from "../types/ports.js";
+import type { DatabasePort, Queryable } from "../types/ports.js";
 
 const HEALTH_TIMEOUT_MS = 2_000;
 
@@ -22,7 +22,7 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   });
 }
 
-export class Database implements DatabasePort {
+export class Database implements DatabasePort, Queryable {
   private closed = false;
 
   constructor(private readonly pool: pg.Pool) {}
@@ -41,6 +41,13 @@ export class Database implements DatabasePort {
     });
 
     return new Database(pool);
+  }
+
+  query<R extends pg.QueryResultRow>(
+    text: string,
+    values?: unknown[],
+  ): Promise<pg.QueryResult<R>> {
+    return this.pool.query<R>(text, values);
   }
 
   async verify(): Promise<void> {

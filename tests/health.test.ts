@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../src/app.js";
-import { createMockDatabase, createMockRedis } from "./helpers.js";
+import {
+  createMockDatabase,
+  createMockRedis,
+  createUrlService,
+} from "./helpers.js";
 
 describe("application factory and health routes", () => {
   let app: FastifyInstance | undefined;
@@ -17,6 +21,7 @@ describe("application factory and health routes", () => {
     app = await buildApp({
       db: createMockDatabase(),
       redis: createMockRedis(),
+      urlService: createUrlService(),
       logger: false,
     });
 
@@ -27,7 +32,12 @@ describe("application factory and health routes", () => {
   it("returns 200 JSON from GET /health/live without dependency checks", async () => {
     const db = createMockDatabase(false);
     const redis = createMockRedis(false);
-    app = await buildApp({ db, redis, logger: false });
+    app = await buildApp({
+      db,
+      redis,
+      urlService: createUrlService(),
+      logger: false,
+    });
 
     const response = await app.inject({
       method: "GET",
@@ -45,6 +55,7 @@ describe("application factory and health routes", () => {
     app = await buildApp({
       db: createMockDatabase(true),
       redis: createMockRedis(true),
+      urlService: createUrlService(),
       logger: false,
     });
 
@@ -67,6 +78,7 @@ describe("application factory and health routes", () => {
     app = await buildApp({
       db: createMockDatabase(false),
       redis: createMockRedis(true),
+      urlService: createUrlService(),
       logger: false,
     });
 
@@ -90,6 +102,7 @@ describe("application factory and health routes", () => {
     app = await buildApp({
       db: createMockDatabase(true),
       redis: createMockRedis(false),
+      urlService: createUrlService(),
       logger: false,
     });
 
@@ -112,6 +125,7 @@ describe("application factory and health routes", () => {
     app = await buildApp({
       db: createMockDatabase(),
       redis: createMockRedis(),
+      urlService: createUrlService(),
       logger: false,
     });
 
@@ -131,6 +145,7 @@ describe("application factory and health routes", () => {
     app = await buildApp({
       db: createMockDatabase(),
       redis: createMockRedis(),
+      urlService: createUrlService(),
       logger: false,
     });
 
