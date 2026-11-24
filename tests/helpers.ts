@@ -11,9 +11,13 @@ import { UrlService } from "../src/urls/url.service.js";
 
 export const TEST_PUBLIC_BASE_URL = "http://localhost:3000";
 
-export function createMockDatabase(healthy = true): DatabasePort {
+export function createMockDatabase(
+  healthy = true,
+  migrated = true,
+): DatabasePort {
   return {
     ping: async () => healthy,
+    migrationsApplied: async () => migrated,
     close: async () => undefined,
   };
 }

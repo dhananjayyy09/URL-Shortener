@@ -1,4 +1,6 @@
 import type { FastifyInstance } from "fastify";
+import { fileURLToPath } from "node:url";
+import { loadMigrations } from "./db/migrator.js";
 import { loadLocalEnv, parseEnv } from "./config/env.js";
 import { buildApp } from "./app.js";
 import { Database } from "./plugins/database.js";
@@ -12,6 +14,8 @@ import { redactErrorMessage } from "./utils/redact.js";
 loadLocalEnv();
 
 const env = parseEnv(process.env);
+
+const MIGRATIONS_DIR = fileURLToPath(new URL("../migrations", import.meta.url));
 
 async function closeQuietly(
   resource: { close(): Promise<void> } | undefined,
@@ -47,7 +51,11 @@ async function start(): Promise<void> {
   };
 
   try {
-    db = Database.create(env.DATABASE_URL);
+    const migrations = await loadMigrations(MIGRATIONS_DIR);
+    db = Database.create(
+      env.DATABASE_URL,
+      migrations.map((migration) => migration.name),
+    );
     redis = RedisConnection.create(env.REDIS_URL);
 
     await db.verify();

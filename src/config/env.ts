@@ -33,6 +33,10 @@ const publicBaseUrlSchema = z
     const url = new URL(value);
     return url.username === "" && url.password === "";
   }, "PUBLIC_BASE_URL must not contain credentials")
+  .refine(
+    (value) => new URL(value).pathname === "/",
+    "PUBLIC_BASE_URL must not contain a path; redirects are served at the root",
+  )
   .transform((value) => value.replace(/\/+$/, ""));
 
 function positiveInt(name: string, defaultValue: number) {

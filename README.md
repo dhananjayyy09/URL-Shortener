@@ -3,7 +3,7 @@
 ScaleURL is a production-oriented URL shortening service. The long-term goal is to support a defined high-throughput workload in later phases. This repository currently implements:
 
 - **Phase 1:** a type-safe Fastify foundation, configuration, Dockerized PostgreSQL and Redis, health checks, and graceful shutdown.
-- **Phase 2:** the URL creation pipeline: raw SQL migrations, the `urls` table, database-derived Base62 short codes, and `POST /api/v1/urls`.
+- **Phase 2:** the URL creation pipeline: raw SQL migrations, the `urls` table, random Base62 short codes, and `POST /api/v1/urls`.
 - **Phase 3:** the redirect engine: `GET /:code` looks the code up in PostgreSQL and redirects with `302 Found`.
 - **Phase 4:** Redis cache-aside for redirects, with PostgreSQL as the source of truth.
 - **Phase 5:** Redis-backed, per-client-IP fixed-window rate limiting for URL creation and redirects.
@@ -104,7 +104,7 @@ Required variables:
 - `PORT`
 - `DATABASE_URL`
 - `REDIS_URL`
-- `PUBLIC_BASE_URL`: absolute `http(s)` URL used to build `shortUrl` in API responses (for example `http://localhost:3000` or `https://sho.rt`). A path prefix is allowed; query strings and fragments are rejected; trailing slashes are removed.
+- `PUBLIC_BASE_URL`: absolute `http(s)` URL used to build `shortUrl` in API responses (for example `http://localhost:3000` or `https://sho.rt`). It must point at the root (redirects are served at `/:code`), so paths, query strings and fragments are rejected; a trailing slash is removed.
 - `URL_CACHE_TTL_SECONDS`: redirect cache TTL in seconds (positive integer, default `300`). Invalid values fail startup validation.
 - `CREATE_URL_RATE_LIMIT_MAX`, `CREATE_URL_RATE_LIMIT_WINDOW_SECONDS`, `REDIRECT_RATE_LIMIT_MAX`, `REDIRECT_RATE_LIMIT_WINDOW_SECONDS`: rate-limit policies (positive integers). See [Rate limiting](#rate-limiting-phase-5).
 - `TRUST_PROXY`: reverse proxies whose `X-Forwarded-For` is trusted (default `false`). See [Client identity and proxies](#client-identity-and-proxies).
@@ -225,9 +225,9 @@ curl -i -X POST http://127.0.0.1:3000/api/v1/urls \
 
 ```json
 {
-  "code": "1",
+  "code": "aZ3kQ9x",
   "originalUrl": "https://example.com/some/long/path",
-  "shortUrl": "http://localhost:3000/1",
+  "shortUrl": "http://localhost:3000/aZ3kQ9x",
   "createdAt": "2026-11-21T10:00:00.000Z"
 }
 ```
@@ -254,13 +254,16 @@ Database or unexpected failures return a generic `500` (`"An unexpected error oc
 
 ### How short codes are generated
 
-1. `SELECT nextval(...)` reserves the next value of the `urls.id` identity sequence.
-2. The id (handled as a string / `bigint`, never a JavaScript `number`) is Base62-encoded with the alphabet `0-9a-zA-Z`.
-3. A single `INSERT ... OVERRIDING SYSTEM VALUE` writes the row with its id and final code.
+Each code is 7 characters drawn uniformly from the Base62 alphabet `0-9a-zA-Z` with Node's CSPRNG (`crypto.randomInt`), giving 62^7 ≈ 3.5 trillion possible codes. Codes are not derived from the row id, so they cannot be enumerated by counting.
 
-Because the row is inserted with its code in one statement, no partially created row is ever visible, so no explicit transaction is needed. Uniqueness comes from the database sequence and the `urls_code_key` constraint, not from Base62 itself. If an insert still hits a `code` unique violation (for example a manually inserted row), the repository retries with a fresh id up to 3 times, then returns a `500`. A failed insert leaves a gap in the id sequence, which is harmless.
+A URL is created with one statement:
 
-Any `BIGINT` encodes to at most 11 characters, within `VARCHAR(16)`.
+```sql
+INSERT INTO urls (code, original_url) VALUES ($1, $2)
+RETURNING id::text AS id, code, original_url, created_at
+```
+
+If the insert hits the `urls_code_key` unique constraint (a random collision, or a code from an older row), the repository retries with a new code up to 5 times, then returns a `500`. Rows created before this change keep their original sequential codes, which continue to redirect.
 
 ## Health endpoints
 
@@ -276,7 +279,7 @@ Example:
 { "status": "ok", "checks": { "live": true } }
 ```
 
-Readiness (PostgreSQL `SELECT 1` and Redis `PING` both succeed):
+Readiness (PostgreSQL `SELECT 1` and Redis `PING` succeed, and every migration file in `migrations/` is recorded in `schema_migrations`):
 
 ```bash
 curl http://127.0.0.1:3000/health/ready
@@ -285,10 +288,10 @@ curl http://127.0.0.1:3000/health/ready
 Healthy example:
 
 ```json
-{ "status": "ok", "checks": { "postgres": "up", "redis": "up" } }
+{ "status": "ok", "checks": { "postgres": "up", "migrations": "applied", "redis": "up" } }
 ```
 
-If either dependency is down, the response is HTTP 503 with the corresponding check marked `down`. Responses do not include connection strings or driver internals.
+If either dependency is down, the response is HTTP 503 with the corresponding check marked `down`. If PostgreSQL is up but migrations have not been run, the response is 503 with `"migrations": "pending"` (`"unknown"` while PostgreSQL is down). Once all migrations are seen, the result is cached for the life of the process. Responses do not include connection strings or driver internals.
 
 ## Stop services
 
@@ -581,8 +584,7 @@ docker compose start redis
 ## Limitations
 
 - Authentication, API keys, analytics, custom aliases, expiration cleanup, and load-test infrastructure are not implemented.
-- Codes are sequential (`1`, `2`, ... `10`, ...), so they are short but enumerable. Do not treat short codes as secrets.
-- Creating a URL takes two database round trips (`nextval` and `INSERT`). Redirects query PostgreSQL only on a cache miss.
+- Codes are random but public: anyone with a link can share it. Do not treat short codes as access control.
 - Cache entries are not invalidated automatically yet (no URL mutation API exists). Rows changed directly in the database can be served stale from Redis for up to `URL_CACHE_TTL_SECONDS`.
 - There is no protection against a burst of concurrent misses for one code (no locking or request coalescing). Each miss queries PostgreSQL once.
 - Rate limiting is a per-IP fixed window. It allows bursts of up to twice the limit across a window boundary, it treats clients behind one NAT as a single client, and limiting per IPv6 address is weak because one user often controls a whole /64. It is bypassed while Redis is down.

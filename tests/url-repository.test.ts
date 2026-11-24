@@ -19,101 +19,94 @@ function uniqueViolation(): Error {
 describe("UrlRepository.create", () => {
   const createdAt = new Date("2026-11-21T10:00:00.000Z");
 
-  it("derives the code from the database id and inserts with parameters", async () => {
-    const { db, query } = createDb(async (text, values) => {
-      if (text.includes("nextval")) {
-        return { rows: [{ id: "9007199254740993" }] };
-      }
-      return {
-        rows: [
-          {
-            id: values?.[0],
-            code: values?.[1],
-            original_url: values?.[2],
-            created_at: createdAt,
-          },
-        ],
-      };
-    });
+  function insertedRow(values?: unknown[]) {
+    return {
+      rows: [
+        {
+          id: "42",
+          code: values?.[0],
+          original_url: values?.[1],
+          created_at: createdAt,
+        },
+      ],
+    };
+  }
 
-    const created = await new UrlRepository(db).create(
+  it("inserts a generated code in a single parameterized statement", async () => {
+    const { db, query } = createDb(async (_text, values) => insertedRow(values));
+
+    const created = await new UrlRepository(db, () => "aB3dE5g").create(
       "https://example.com/?q=1'; DROP TABLE urls;--",
     );
 
     expect(created).toEqual({
-      id: "9007199254740993",
-      code: "FfGNdXsE9",
+      id: "42",
+      code: "aB3dE5g",
       originalUrl: "https://example.com/?q=1'; DROP TABLE urls;--",
       createdAt,
     });
-
-    const [insertSql, insertValues] = query.mock.calls[1] ?? [];
-    expect(insertSql).toContain("VALUES ($1, $2, $3)");
+    expect(query).toHaveBeenCalledTimes(1);
+    const [insertSql, insertValues] = query.mock.calls[0] ?? [];
+    expect(insertSql).toContain("VALUES ($1, $2)");
+    expect(insertSql).not.toMatch(/nextval|OVERRIDING/);
     expect(insertSql).not.toContain("example.com");
     expect(insertValues).toEqual([
-      "9007199254740993",
-      "FfGNdXsE9",
+      "aB3dE5g",
       "https://example.com/?q=1'; DROP TABLE urls;--",
     ]);
   });
 
-  it("retries with a fresh id when the code collides", async () => {
-    const ids = ["1", "2"];
-    let inserts = 0;
-    const { db, query } = createDb(async (text, values) => {
-      if (text.includes("nextval")) {
-        return { rows: [{ id: ids.shift() }] };
-      }
-      inserts += 1;
-      if (inserts === 1) {
+  it("uses random 7-character Base62 codes by default", async () => {
+    const { db } = createDb(async (_text, values) => insertedRow(values));
+    const repository = new UrlRepository(db);
+
+    const codes = await Promise.all(
+      Array.from({ length: 50 }, () => repository.create("https://example.com")),
+    );
+
+    for (const { code } of codes) {
+      expect(code).toMatch(/^[0-9a-zA-Z]{7}$/);
+    }
+    expect(new Set(codes.map(({ code }) => code)).size).toBe(50);
+  });
+
+  it("retries with a new code when the code collides", async () => {
+    const codes = ["collide", "fresh01"];
+    const { db, query } = createDb(async (_text, values) => {
+      if (values?.[0] === "collide") {
         throw uniqueViolation();
       }
-      return {
-        rows: [
-          {
-            id: values?.[0],
-            code: values?.[1],
-            original_url: values?.[2],
-            created_at: createdAt,
-          },
-        ],
-      };
+      return insertedRow(values);
     });
 
-    const created = await new UrlRepository(db).create("https://example.com");
+    const created = await new UrlRepository(db, () => codes.shift() ?? "x").create(
+      "https://example.com",
+    );
 
-    expect(created.code).toBe("2");
-    expect(query).toHaveBeenCalledTimes(4);
+    expect(created.code).toBe("fresh01");
+    expect(query).toHaveBeenCalledTimes(2);
   });
 
   it("gives up after repeated collisions", async () => {
-    let id = 0;
-    const { db } = createDb(async (text) => {
-      if (text.includes("nextval")) {
-        id += 1;
-        return { rows: [{ id: String(id) }] };
-      }
+    const { db, query } = createDb(async () => {
       throw uniqueViolation();
     });
 
     await expect(
-      new UrlRepository(db).create("https://example.com"),
+      new UrlRepository(db, () => "same000").create("https://example.com"),
     ).rejects.toMatchObject({ code: "23505" });
-    expect(id).toBe(3);
+    expect(query).toHaveBeenCalledTimes(5);
   });
 
   it("does not retry other database errors", async () => {
-    const { db, query } = createDb(async (text) => {
-      if (text.includes("nextval")) {
-        return { rows: [{ id: "1" }] };
-      }
+    const { db, query } = createDb(async () => {
       throw Object.assign(new Error("connection lost"), { code: "08006" });
     });
 
     await expect(
       new UrlRepository(db).create("https://example.com"),
     ).rejects.toThrow("connection lost");
-    expect(query).toHaveBeenCalledTimes(2);
+    expect(query).toHaveBeenCalledTimes(1);
   });
 });
 

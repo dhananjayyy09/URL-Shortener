@@ -24,10 +24,17 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
 
 export class Database implements DatabasePort, Queryable {
   private closed = false;
+  private migrated = false;
 
-  constructor(private readonly pool: pg.Pool) {}
+  constructor(
+    private readonly pool: pg.Pool,
+    private readonly expectedMigrations: readonly string[] = [],
+  ) {}
 
-  static create(databaseUrl: string): Database {
+  static create(
+    databaseUrl: string,
+    expectedMigrations: readonly string[] = [],
+  ): Database {
     const pool = new pg.Pool({
       connectionString: databaseUrl,
       max: 10,
@@ -40,7 +47,7 @@ export class Database implements DatabasePort, Queryable {
       // Idle-client disconnects must not crash the process; readiness reports them.
     });
 
-    return new Database(pool);
+    return new Database(pool, expectedMigrations);
   }
 
   query<R extends pg.QueryResultRow>(
@@ -61,6 +68,25 @@ export class Database implements DatabasePort, Queryable {
     try {
       await withTimeout(this.pool.query("SELECT 1"), HEALTH_TIMEOUT_MS);
       return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // Applied migrations never disappear, so a positive result is cached.
+  async migrationsApplied(): Promise<boolean> {
+    if (this.migrated) {
+      return true;
+    }
+
+    try {
+      const { rows } = await withTimeout(
+        this.pool.query<{ name: string }>("SELECT name FROM schema_migrations"),
+        HEALTH_TIMEOUT_MS,
+      );
+      const applied = new Set(rows.map((row) => row.name));
+      this.migrated = this.expectedMigrations.every((name) => applied.has(name));
+      return this.migrated;
     } catch {
       return false;
     }

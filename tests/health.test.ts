@@ -69,6 +69,7 @@ describe("application factory and health routes", () => {
       status: "ok",
       checks: {
         postgres: "up",
+        migrations: "applied",
         redis: "up",
       },
     });
@@ -92,6 +93,7 @@ describe("application factory and health routes", () => {
       status: "unavailable",
       checks: {
         postgres: "down",
+        migrations: "unknown",
         redis: "up",
       },
     });
@@ -116,8 +118,26 @@ describe("application factory and health routes", () => {
       status: "unavailable",
       checks: {
         postgres: "up",
+        migrations: "applied",
         redis: "down",
       },
+    });
+  });
+
+  it("returns 503 from GET /health/ready when migrations are pending", async () => {
+    app = await buildApp({
+      db: createMockDatabase(true, false),
+      redis: createMockRedis(true),
+      urlService: createUrlService(),
+      logger: false,
+    });
+
+    const response = await app.inject({ method: "GET", url: "/health/ready" });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toEqual({
+      status: "unavailable",
+      checks: { postgres: "up", migrations: "pending", redis: "up" },
     });
   });
 

@@ -3,6 +3,7 @@ import {
   BASE62_ALPHABET,
   decodeBase62,
   encodeBase62,
+  generateShortCode,
   isBase62,
 } from "../src/utils/base62.js";
 
@@ -47,6 +48,18 @@ describe("base62", () => {
 
   it("rejects negative values", () => {
     expect(() => encodeBase62(-1n)).toThrow(RangeError);
+  });
+
+  it("generates fixed-length codes from the Base62 alphabet", () => {
+    expect(generateShortCode()).toMatch(/^[0-9a-zA-Z]{7}$/);
+    expect(generateShortCode(4, () => 61)).toBe("ZZZZ");
+    expect(generateShortCode(3, () => 0)).toBe("000");
+    const draws: number[] = [];
+    generateShortCode(2, (max) => {
+      draws.push(max);
+      return 10;
+    });
+    expect(draws).toEqual([62, 62]);
   });
 
   it("validates Base62 strings", () => {
