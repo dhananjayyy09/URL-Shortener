@@ -123,6 +123,9 @@ describe("environment configuration", () => {
       "example.com",
       "10.0.0.5,,10.0.0.6",
       "10.0.0.0/8/1",
+      "fe80::1%br-lan",
+      "fe80::1%eth0",
+      "fe80::%eth0/64",
     ]) {
       expect(() => parseEnv({ ...validEnv, TRUST_PROXY: value })).toThrow(
         /TRUST_PROXY must be false or a comma-separated list/,

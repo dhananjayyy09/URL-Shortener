@@ -51,7 +51,8 @@ function isTrustedProxyEntry(entry: string): boolean {
   }
 
   const [address, prefix, ...rest] = entry.split("/");
-  const version = address ? isIP(address) : 0;
+  // Zone IDs (fe80::1%eth0) pass isIP but are rejected by Fastify's proxy parser.
+  const version = address && !address.includes("%") ? isIP(address) : 0;
   if (version === 0 || rest.length > 0) {
     return false;
   }
