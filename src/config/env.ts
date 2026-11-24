@@ -28,6 +28,10 @@ const publicBaseUrlSchema = z
       url.hash === ""
     );
   }, "PUBLIC_BASE_URL must be an http(s) URL without a query string or fragment")
+  .refine((value) => {
+    const url = new URL(value);
+    return url.username === "" && url.password === "";
+  }, "PUBLIC_BASE_URL must not contain credentials")
   .transform((value) => value.replace(/\/+$/, ""));
 
 const envSchema = z.object({

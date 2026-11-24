@@ -16,6 +16,9 @@ const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
 // URLs match what the client sent and cannot inject headers on redirect.
 const FORBIDDEN_CHARACTERS = /[\s\u0000-\u001f\u007f]/;
 
+// Lone UTF-16 surrogates cannot be encoded as UTF-8; PostgreSQL would store U+FFFD instead.
+const LONE_SURROGATE = /\p{Cs}/u;
+
 function parseUrl(value: string): URL | undefined {
   try {
     return new URL(value);
@@ -45,6 +48,14 @@ export const createUrlBodySchema = z.object({
         ctx.addIssue({
           code: "custom",
           message: "url must not contain whitespace or control characters",
+        });
+        return;
+      }
+
+      if (LONE_SURROGATE.test(value)) {
+        ctx.addIssue({
+          code: "custom",
+          message: "url must be valid Unicode",
         });
         return;
       }
