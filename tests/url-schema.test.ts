@@ -36,6 +36,16 @@ describe("URL creation body schema", () => {
     );
   });
 
+  it("rejects urls containing unpaired UTF-16 surrogates", () => {
+    expect(firstIssue({ url: "https://example.com/\uD800" })).toMatch(
+      /valid Unicode/,
+    );
+    expect(firstIssue({ url: "https://example.com/\uDC00x" })).toMatch(
+      /valid Unicode/,
+    );
+    expect(firstIssue({ url: "https://example.com/\uD83D\uDE00" })).toBeUndefined();
+  });
+
   it("rejects malformed and relative urls", () => {
     expect(firstIssue({ url: "not a url" })).toBeDefined();
     expect(firstIssue({ url: "example.com" })).toMatch(/valid absolute URL/);
