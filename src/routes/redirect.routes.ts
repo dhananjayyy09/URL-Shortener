@@ -1,10 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import type { UrlService } from "../urls/url.service.js";
 
-// Header values must be ASCII; percent-encode any non-ASCII characters
-// (e.g. IDN hosts or Unicode paths) so they are sent as valid UTF-8 escapes.
+// WHATWG serialization yields an ASCII header value with an explicit "//"
+// authority, Punycode IDN hosts and percent-encoded non-ASCII path/query characters.
 function toLocationHeader(url: string): string {
-  return url.replace(/[^\x00-\x7f]+/g, (chars) => encodeURIComponent(chars));
+  return new URL(url).href;
 }
 
 export async function registerRedirectRoutes(

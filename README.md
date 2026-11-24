@@ -312,7 +312,7 @@ HTTP/1.1 302 Found
 location: https://example.com/some/long/path
 ```
 
-The destination is always the `original_url` stored in PostgreSQL. Query strings on the short URL are ignored, and nothing in the request can change the destination. Non-ASCII characters in the stored URL are percent-encoded in the `Location` header.
+The destination is always the `original_url` stored in PostgreSQL. Query strings on the short URL are ignored, and nothing in the request can change the destination. The `Location` header is the WHATWG serialization of the stored URL (`new URL(original_url).href`): internationalized hosts become Punycode, other non-ASCII characters are percent-encoded, and forms like `http:example.com` gain the `//` authority delimiter.
 
 `302 Found` is used instead of `301 Moved Permanently` because browsers and proxies cache permanent redirects, which would prevent later phases from changing redirect behavior.
 

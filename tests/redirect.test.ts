@@ -80,7 +80,7 @@ describe("GET /:code", () => {
       expect(lookup).toHaveBeenCalledWith("abc123");
     });
 
-    it("percent-encodes non-ASCII characters in the Location header", async () => {
+    it("serializes non-ASCII destinations as Punycode hosts and percent-encoded paths", async () => {
       const { server } = await createApp(async () =>
         target({ originalUrl: "https://例え.jp/パス?q=ü" }),
       );
@@ -89,8 +89,19 @@ describe("GET /:code", () => {
 
       expect(response.statusCode).toBe(302);
       expect(response.headers.location).toBe(
-        "https://%E4%BE%8B%E3%81%88.jp/%E3%83%91%E3%82%B9?q=%C3%BC",
+        "https://xn--r8jz45g.jp/%E3%83%91%E3%82%B9?q=%C3%BC",
       );
+    });
+
+    it("adds the authority delimiter for destinations stored without '//'", async () => {
+      const { server } = await createApp(async () =>
+        target({ originalUrl: "http:example.com/docs" }),
+      );
+
+      const response = await server.inject({ method: "GET", url: "/abc" });
+
+      expect(response.statusCode).toBe(302);
+      expect(response.headers.location).toBe("http://example.com/docs");
     });
   });
 
