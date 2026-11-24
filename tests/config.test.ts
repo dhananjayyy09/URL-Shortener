@@ -100,12 +100,15 @@ describe("environment configuration", () => {
     expect(
       parseEnv({
         ...validEnv,
-        TRUST_PROXY: "10.0.0.5, 172.16.0.0/12,2001:db8::/32,loopback,UniqueLocal",
+        TRUST_PROXY:
+          "10.0.0.5, 172.16.0.0/12,2001:db8::/32,fe80::1%eth0,fe80::%eth0/64,loopback,UniqueLocal",
       }).TRUST_PROXY,
     ).toEqual([
       "10.0.0.5",
       "172.16.0.0/12",
       "2001:db8::/32",
+      "fe80::1%eth0",
+      "fe80::%eth0/64",
       "loopback",
       "uniquelocal",
     ]);
@@ -124,8 +127,7 @@ describe("environment configuration", () => {
       "10.0.0.5,,10.0.0.6",
       "10.0.0.0/8/1",
       "fe80::1%br-lan",
-      "fe80::1%eth0",
-      "fe80::%eth0/64",
+      "fe80::1%eth0.10",
     ]) {
       expect(() => parseEnv({ ...validEnv, TRUST_PROXY: value })).toThrow(
         /TRUST_PROXY must be false or a comma-separated list/,
